@@ -41,22 +41,12 @@ workflows:
           echo "=== Structure iOS ==="
           find ios -maxdepth 3 -type f | sort
 
-            - name: Compiler pour le simulateur iOS
+      - name: Compiler pour le simulateur iOS
         script: |
-          echo "=== Contenu de ios/App ==="
-          ls -la ios/App
-
-          echo "=== Projets Xcode disponibles ==="
-          find ios -maxdepth 3 \( -name "*.xcworkspace" -o -name "*.xcodeproj" \)
-
           cd ios/App
 
-          echo "=== Informations Xcode ==="
-          xcodebuild -list
-
-          echo "=== Compilation ==="
           xcodebuild \
-            -workspace App.xcworkspace \
+            -project App.xcodeproj \
             -scheme App \
             -configuration Debug \
             -sdk iphonesimulator \
