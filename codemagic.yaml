@@ -8,7 +8,11 @@ workflows:
       node: v22.11.0
       xcode: latest
       cocoapods: default
-
+     
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.stefikare.trontuner
+   
     scripts:
       - name: Vérifier le projet
         script: |
@@ -34,13 +38,15 @@ workflows:
         script: |
           npx cap sync ios
 
-   
+      - name: Configurer la signature iOS
+      script: xcode-project use-profiles
 
-            - name: Compiler pour iOS
-        script: |
-          cd ios/App
-          xcodebuild -project App.xcodeproj -scheme App -configuration Debug -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+    - name: Générer l'IPA signé
+      script: |
+        cd ios/App
+        xcode-project build-ipa --project App.xcodeproj --scheme App
 
-    artifacts:
-      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
-      - /tmp/xcodebuild_logs/*.log
+  artifacts:
+    - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+    - /tmp/xcodebuild_logs/*.log
+    - ios/App/build/ios/ipa/*.ipa
