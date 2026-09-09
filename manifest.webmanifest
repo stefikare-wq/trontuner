@@ -1,0 +1,11 @@
+{
+  "id": "/trontuner/",
+  "name": "Tuner",
+  "short_name": "Tuner",
+  "description": "Radio et lecteur audio Tuner",
+  "start_url": "/trontuner/",
+  "scope": "/trontuner/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}
