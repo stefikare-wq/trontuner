@@ -30,27 +30,28 @@ workflows:
 
       - name: Créer le projet iOS
         script: |
-          npx cap add ios || true
+          npx cap add ios
 
       - name: Synchroniser l'application web
         script: |
           npx cap sync ios
 
-      - name: Installer CocoaPods
+      - name: Vérifier les fichiers iOS
+        script: |
+          echo "=== Structure iOS ==="
+          find ios -maxdepth 3 -type f | sort
+
+      - name: Compiler pour le simulateur iOS
         script: |
           cd ios/App
-          pod install
 
-      - name: Compiler iOS sans signature
-        script: |
-          cd ios/App
-
-          xcodebuild build \
-            -project App.xcodeproj \
+          xcodebuild \
+            -workspace App.xcworkspace \
             -scheme App \
             -configuration Debug \
             -sdk iphonesimulator \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
     artifacts:
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
