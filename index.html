@@ -317,7 +317,7 @@
     <div class="wave" id="wave"></div>
     <div class="tb-btns">
       <button class="pill" id="power">Écouter</button>
-      <button class="pill ghost" id="engineSwitch">🎛️ STUDIO</button>
+      <button class="pill ghost" id="engineSwitch">🌙 SCREEN OFF</button>
       <button class="pill ghost" id="openFile">Ouvrir un morceau</button>
       <button class="pill ghost" id="openDrawer">Stations</button>
     </div>
@@ -412,7 +412,10 @@ nativeAudio.crossOrigin = 'anonymous';
 function updateEngineButton(){
   const b=document.getElementById('engineSwitch');
   if(!b) return;
-  b.textContent = audioEngine === 'studio' ? '🎛️ STUDIO' : '🌙 SCREEN OFF';
+  // Le bouton affiche le mode vers lequel on va basculer.
+  b.textContent = audioEngine === 'studio'
+    ? '🌙 SCREEN OFF'
+    : '🎛️ STUDIO';
 }
 
 function updateEngineUI(){
