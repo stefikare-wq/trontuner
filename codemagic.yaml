@@ -21,6 +21,11 @@ workflows:
           npm init -y
           npm install @capacitor/core @capacitor/cli @capacitor/ios
 
+      - name: Préparer les fichiers web
+        script: |
+          mkdir -p www
+          cp index.html www/index.html
+
       - name: Créer le projet iOS
         script: |
           npx cap add ios
