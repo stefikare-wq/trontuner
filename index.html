@@ -317,6 +317,7 @@
     <div class="wave" id="wave"></div>
     <div class="tb-btns">
       <button class="pill" id="power">Écouter</button>
+      <button class="pill ghost" id="engineSwitch">🎛️ STUDIO</button>
       <button class="pill ghost" id="openFile">Ouvrir un morceau</button>
       <button class="pill ghost" id="openDrawer">Stations</button>
     </div>
@@ -398,6 +399,94 @@ let firstChunkScheduled = false;
 let pendingChunks = [];
 let isProcessing = false;
 let currentStation = null;
+
+// ===================== DOUBLE MOTEUR AUDIO =====================
+// STUDIO = moteur Web Audio existant et tous les réglages.
+// SCREEN OFF = lecteur HTML5 natif pour la lecture en arrière-plan iOS.
+let audioEngine = 'studio';
+const nativeAudio = new Audio();
+nativeAudio.preload = 'none';
+nativeAudio.playsInline = true;
+nativeAudio.crossOrigin = 'anonymous';
+
+function updateEngineButton(){
+  const b=document.getElementById('engineSwitch');
+  if(!b) return;
+  b.textContent = audioEngine === 'studio' ? '🎛️ STUDIO' : '🌙 SCREEN OFF';
+}
+
+function updateEngineUI(){
+  const studio = audioEngine === 'studio';
+  document.querySelectorAll('.control, .scope-card').forEach(el=>{
+    // Les contrôles restent visibles, mais on indique clairement qu'ils sont liés au Studio.
+    if(!studio && el.classList.contains('scope-card')) el.style.opacity='0.55';
+    else if(el.classList.contains('scope-card')) el.style.opacity='1';
+  });
+  updateEngineButton();
+}
+
+async function stopStudioEngine(){
+  if (abortController) { try { abortController.abort(); } catch(e) {} }
+  if (audioCtx && audioCtx.state !== 'closed') { try { await audioCtx.close(); } catch(e) {} }
+  audioCtx=null; pannerNode=null; gainNode=null;
+  bassFilter=null; midFilter=null; highFilter=null; analyserNode=null;
+  bassAnalyser=null; midAnalyser=null; highAnalyser=null;
+  lowpassFilter=null; delayNode=null; feedbackGain=null; convolverNode=null;
+  dryGain=null; wetGain=null; limiterNode=null;
+  cfSplitter=null; cfMerger=null; cfGainLL=null; cfGainLR=null; cfGainRL=null; cfGainRR=null;
+  pendingChunks=[];
+}
+
+function stopNativeEngine(){
+  try { nativeAudio.pause(); nativeAudio.removeAttribute('src'); nativeAudio.load(); } catch(e) {}
+}
+
+async function playNativeStation(station){
+  if(!station) throw new Error('Aucune station sélectionnée');
+  stopNativeEngine();
+  nativeAudio.src=station.u;
+  nativeAudio.load();
+  await nativeAudio.play();
+  if('mediaSession' in navigator){
+    try{
+      navigator.mediaSession.metadata=new MediaMetadata({title:station.n||'Tuner',artist:station.g||'Radio',album:'Tuner'});
+      navigator.mediaSession.playbackState='playing';
+    }catch(e){}
+  }
+}
+
+async function switchAudioEngine(){
+  const wasPlaying=isPlaying;
+  const station=currentStation;
+  audioEngine = audioEngine === 'studio' ? 'background' : 'studio';
+  updateEngineUI();
+
+  if(!wasPlaying || !station){
+    setStatus(audioEngine==='studio' ? '🎛️ Mode Studio sélectionné' : '🌙 Mode Screen Off sélectionné');
+    return;
+  }
+
+  setStatus(audioEngine==='studio' ? '🎛️ Passage au moteur Studio…' : '🌙 Passage au lecteur Screen Off…');
+  try{
+    if(audioEngine==='background'){
+      await stopStudioEngine();
+      await playNativeStation(station);
+      setStatus('🌙 Screen Off : lecture native active');
+    }else{
+      stopNativeEngine();
+      await startStream(station.u,station);
+      setStatus('🎛️ Studio : réglages audio actifs');
+    }
+    isPlaying=true;
+  }catch(err){
+    console.error(err);
+    setStatus('❌ Changement de moteur impossible : '+(err.message||err));
+  }
+}
+
+nativeAudio.addEventListener('playing',()=>{if(audioEngine==='background') isPlaying=true;});
+nativeAudio.addEventListener('pause',()=>{if(audioEngine==='background' && !nativeAudio.ended) isPlaying=false;});
+nativeAudio.addEventListener('error',()=>{if(audioEngine==='background') setStatus('❌ Flux non compatible avec le lecteur natif');});
 
 // Nœuds EQ
 let bassFilter = null;
@@ -903,71 +992,35 @@ function setStatus(msg) {
 
 async function togglePlay(station) {
   if (isPlaying) {
-    if (abortController) {
-      try { abortController.abort(); } catch(e) {}
-    }
-    if (audioCtx && audioCtx.state !== 'closed') {
-      try { await audioCtx.close(); } catch(e) {}
-    }
-    isPlaying = false;
-    audioCtx = null;
-    pannerNode = null;
-    gainNode = null;
-    bassFilter = null;
-    midFilter = null;
-    highFilter = null;
-    analyserNode = null;
-    bassAnalyser = null;
-    midAnalyser = null;
-    highAnalyser = null;
-    lowpassFilter = null;
-    delayNode = null;
-    feedbackGain = null;
-    convolverNode = null;
-    dryGain = null;
-    wetGain = null;
-    limiterNode = null;
-    cfSplitter = null;
-    cfMerger = null;
-    cfGainLL = null;
-    cfGainLR = null;
-    cfGainRL = null;
-    cfGainRR = null;
-    
-    const power = document.getElementById('power');
-    const power2 = document.getElementById('power2');
-    if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
-    if (power2) power2.textContent = '▶';
+    if(audioEngine==='studio') await stopStudioEngine(); else stopNativeEngine();
+    isPlaying=false;
+    const power=document.getElementById('power'); const power2=document.getElementById('power2');
+    if(power){power.textContent='▶️ Lecture';power.classList.remove('stop');}
+    if(power2) power2.textContent='▶';
     setStatus('⏹️ Arrêté.');
-    bufferFill.style.width = '0%';
-    bufferStatus.textContent = 'Buffer: --';
-    pendingChunks = [];
+    bufferFill.style.width='0%'; bufferStatus.textContent='Buffer: --';
     return;
   }
-
-  if (!station) {
-    setStatus('⚠️ Aucune station sélectionnée.');
-    return;
-  }
-
-  currentStation = station;
-  isPlaying = true;
-  const power = document.getElementById('power');
-  const power2 = document.getElementById('power2');
-  if (power) { power.textContent = '⏹️ Stop'; power.classList.add('stop'); }
-  if (power2) power2.textContent = '❚❚';
-
-  try {
-    await startStream(station.u, station);
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      setStatus('❌ ' + err.message);
-      console.error(err);
+  if(!station){setStatus('⚠️ Aucune station sélectionnée.');return;}
+  currentStation=station;
+  isPlaying=true;
+  const power=document.getElementById('power'); const power2=document.getElementById('power2');
+  if(power){power.textContent='⏹️ Stop';power.classList.add('stop');}
+  if(power2) power2.textContent='❚❚';
+  try{
+    if(audioEngine==='background'){
+      await playNativeStation(station);
+      setStatus('🌙 Screen Off : lecture native active');
+      bufferStatus.textContent='Native audio'; bufferFill.style.width='100%';
+    }else{
+      await startStream(station.u,station);
     }
-    isPlaying = false;
-    if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
-    if (power2) power2.textContent = '▶';
-    bufferFill.style.width = '0%';
+  }catch(err){
+    if(err.name!=='AbortError'){setStatus('❌ '+err.message);console.error(err);}
+    isPlaying=false;
+    if(power){power.textContent='▶️ Lecture';power.classList.remove('stop');}
+    if(power2) power2.textContent='▶';
+    bufferFill.style.width='0%';
   }
 }
 
@@ -1118,6 +1171,9 @@ function playStation(st){
 }
 
 if (power) power.addEventListener('click', function(){ togglePlay(currentStation); });
+const engineSwitch=document.getElementById('engineSwitch');
+if(engineSwitch) engineSwitch.addEventListener('click',switchAudioEngine);
+updateEngineUI();
 if (power2) power2.addEventListener('click', function(){ togglePlay(currentStation); });
 
 // ===================== Liste =====================
