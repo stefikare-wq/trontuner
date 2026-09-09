@@ -386,10 +386,9 @@ const MIN_BUFFER_DURATION = 2.5;
 const FADE_DURATION = 0.04;
 
 let audioCtx = null;
-let gainNode = null;          // Volume
-let pannerNode = null;        // Balance
+let gainNode = null;
+let pannerNode = null;
 let analyserNode = null;
-let scopeAnimationId = null;
 let abortController = null;
 let isPlaying = false;
 let chunksDecoded = 0;
@@ -434,11 +433,9 @@ function scheduleBuffer(audioBuffer) {
     const source = audioCtx.createBufferSource();
     source.buffer = audioBuffer;
     
-    // Gain pour le fondu
     const fadeGain = audioCtx.createGain();
     source.connect(fadeGain);
     
-    // Chaîne: source -> fadeGain -> panner -> gain (volume) -> EQ -> destination
     fadeGain.connect(pannerNode);
     pannerNode.connect(gainNode);
     gainNode.connect(bassFilter);
@@ -507,15 +504,12 @@ async function decodeAndSchedule(chunk) {
 function createAudioContext() {
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   
-  // Panner pour la balance
   pannerNode = audioCtx.createStereoPanner();
   pannerNode.pan.value = 0;
   
-  // Gain pour le volume
   gainNode = audioCtx.createGain();
   gainNode.gain.value = 1;
   
-  // Créer les filtres EQ
   bassFilter = audioCtx.createBiquadFilter();
   bassFilter.type = 'lowshelf';
   bassFilter.frequency.value = 200;
@@ -532,11 +526,10 @@ function createAudioContext() {
   highFilter.frequency.value = 4000;
   highFilter.gain.value = 0;
   
-  // Analyseur principal
   analyserNode = audioCtx.createAnalyser();
   analyserNode.fftSize = 2048;
   
-  // Analyseurs pour les 3 bandes de fréquences
+  // Analyseurs pour les 3 bandes
   bassAnalyser = audioCtx.createAnalyser();
   bassAnalyser.fftSize = 2048;
   bassAnalyser.smoothingTimeConstant = 0.3;
@@ -549,7 +542,7 @@ function createAudioContext() {
   highAnalyser.fftSize = 2048;
   highAnalyser.smoothingTimeConstant = 0.3;
   
-  // Créer des filtres pour séparer les bandes
+  // Filtres de séparation
   const bassSplit = audioCtx.createBiquadFilter();
   bassSplit.type = 'lowpass';
   bassSplit.frequency.value = 250;
@@ -563,8 +556,6 @@ function createAudioContext() {
   highSplit.type = 'highpass';
   highSplit.frequency.value = 4000;
   
-  // Connecter les analyseurs
-  // On prend le signal après l'EQ pour voir l'effet de l'égaliseur
   highFilter.connect(bassSplit);
   bassSplit.connect(bassAnalyser);
   
@@ -574,16 +565,15 @@ function createAudioContext() {
   highFilter.connect(highSplit);
   highSplit.connect(highAnalyser);
   
-  // Les analyseurs sont connectés, mais on ne les connecte pas à la destination
-  // pour ne pas avoir de double son
-  
   return audioCtx;
 }
 
 async function startStream(url, station) {
+  // Arrêter toute lecture en cours avant de démarrer
+  await stopPlayback();
+  
   const ctx = createAudioContext();
   
-  // Gestion iOS
   const handleVisibilityChange = async () => {
     if (!document.hidden && ctx && ctx.state === 'suspended') {
       await ctx.resume();
@@ -595,7 +585,6 @@ async function startStream(url, station) {
     await ctx.resume();
   }
   
-  // Appliquer les valeurs initiales
   updateVolume();
   updateBalance();
   updateEQ();
@@ -696,6 +685,34 @@ async function startStream(url, station) {
   }
 }
 
+async function stopPlayback() {
+  if (abortController) {
+    try { abortController.abort(); } catch(e) {}
+    abortController = null;
+  }
+  if (audioCtx && audioCtx.state !== 'closed') {
+    try { 
+      await audioCtx.close();
+    } catch(e) {}
+  }
+  audioCtx = null;
+  pannerNode = null;
+  gainNode = null;
+  bassFilter = null;
+  midFilter = null;
+  highFilter = null;
+  analyserNode = null;
+  bassAnalyser = null;
+  midAnalyser = null;
+  highAnalyser = null;
+  pendingChunks = [];
+  isProcessing = false;
+  firstChunkScheduled = false;
+  chunksDecoded = 0;
+  bufferFill.style.width = '0%';
+  bufferStatus.textContent = 'Buffer: --';
+}
+
 // ===================== MISE À JOUR DES PARAMÈTRES =====================
 
 function updateVolume() {
@@ -743,38 +760,25 @@ function setStatus(msg) {
 
 async function togglePlay(station) {
   if (isPlaying) {
-    if (abortController) {
-      try { abortController.abort(); } catch(e) {}
-    }
-    if (audioCtx && audioCtx.state !== 'closed') {
-      try { await audioCtx.close(); } catch(e) {}
-    }
+    // Arrêt
+    await stopPlayback();
     isPlaying = false;
-    audioCtx = null;
-    pannerNode = null;
-    gainNode = null;
-    bassFilter = null;
-    midFilter = null;
-    highFilter = null;
-    analyserNode = null;
-    bassAnalyser = null;
-    midAnalyser = null;
-    highAnalyser = null;
-    
     const power = document.getElementById('power');
     const power2 = document.getElementById('power2');
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
     if (power2) power2.textContent = '▶';
     setStatus('⏹️ Arrêté.');
-    bufferFill.style.width = '0%';
-    bufferStatus.textContent = 'Buffer: --';
-    pendingChunks = [];
     return;
   }
 
   if (!station) {
     setStatus('⚠️ Aucune station sélectionnée.');
     return;
+  }
+
+  // Si une lecture est en cours, on l'arrête proprement
+  if (audioCtx) {
+    await stopPlayback();
   }
 
   currentStation = station;
@@ -934,7 +938,13 @@ function title(t){
 }
 
 function playStation(st){
-  currentStation=st;
+  // Arrêter la lecture en cours avant de changer de station
+  if (isPlaying) {
+    stopPlayback();
+    isPlaying = false;
+  }
+  
+  currentStation = st;
   eyebrow.textContent=st.local?'MA MUSIQUE':'RADIO';
   title(st.n);
   var trackEl=document.getElementById('npTrack');
@@ -1123,7 +1133,6 @@ function traceBand(analyser, color, scale, alpha) {
   cx.strokeStyle = color;
   cx.shadowColor = color;
   
-  // Trait avec glow
   cx.globalAlpha = alpha * 0.22;
   cx.lineWidth = 9 * dpr;
   cx.shadowBlur = 34 * dpr;
@@ -1149,7 +1158,6 @@ var idle = 0;
   const playing = isPlaying;
   const live = playing && bassAnalyser && midAnalyser && highAnalyser;
 
-  // Mettre à jour les barres de la wave
   if (live && bassAnalyser) {
     try {
       const data = new Uint8Array(bassAnalyser.fftSize);
@@ -1168,10 +1176,8 @@ var idle = 0;
     }
   }
 
-  // Dessiner l'oscilloscope
   cx.clearRect(0, 0, cv.width, cv.height);
   
-  // Ligne centrale
   cx.strokeStyle = 'rgba(140,190,255,.16)';
   cx.lineWidth = 1 * dpr;
   cx.shadowColor = 'rgba(47,231,255,.7)';
@@ -1183,12 +1189,10 @@ var idle = 0;
   cx.shadowBlur = 0;
 
   if (live) {
-    // Tracer les 3 bandes avec des couleurs et échelles différentes
-    traceBand(bassAnalyser, '#FF3D9E', 0.34, 0.95);  // Bass - rose
-    traceBand(midAnalyser, '#2FE7FF', 0.30, 0.9);    // Medium - cyan
-    traceBand(highAnalyser, '#B9FF45', 0.26, 0.85);  // High - vert
+    traceBand(bassAnalyser, '#FF3D9E', 0.34, 0.95);
+    traceBand(midAnalyser, '#2FE7FF', 0.30, 0.9);
+    traceBand(highAnalyser, '#B9FF45', 0.26, 0.85);
   } else {
-    // Animation en veille
     ['#FF3D9E', '#2FE7FF', '#B9FF45'].forEach(function(c, n) {
       const p = new Path2D();
       for (let x = 0; x < cv.width; x += 4) {
@@ -1270,10 +1274,11 @@ var panel=document.getElementById('console');
        +'<div class="gainbox">'
        +'<div class="gainhead"><span class="lbl">Volume</span><span class="val" data-val="gain"></span></div>'
        +'<input type="range" id="volume" class="big" min="-24" max="12" step="0.5" value="0" style="--c:#2FE7FF">'
-       +'<div class="fader" style="margin-top:6px"><div class="fhead"><span class="lbl">Balance</span>'
+       +'<div class="chvol">'
+       +'<div class="fader"><div class="fhead"><span class="lbl">Balance</span>'
        +'<span class="val" id="balanceVal">Centre</span></div>'
-       +'<input type="range" id="balance" class="big" min="-1" max="1" step="0.01" value="0" style="--c:#FF3D9E"></div>'
-       +'</div>'
+       +'<input type="range" id="balance" min="-1" max="1" step="0.01" value="0" style="--c:#FF3D9E"></div>'
+       +'</div></div>'
        +'<div class="mods"><div class="mod"><h3>ÉGALISEUR 3 BANDES</h3>';
   ['Bass','Medium','High'].forEach(function(lbl,k){
     var id = ['eqBass','eqMid','eqHigh'][k];
@@ -1285,17 +1290,14 @@ var panel=document.getElementById('console');
   h+='</div></div></div>';
   panel.innerHTML=h;
 
-  // Volume
   var volSlider = document.getElementById('volume');
   volSlider.addEventListener('input', function() { updateVolume(); });
   updateVolume();
 
-  // Balance
   var balSlider = document.getElementById('balance');
   balSlider.addEventListener('input', function() { updateBalance(); });
   updateBalance();
 
-  // EQ
   var eqSliders = panel.querySelectorAll('[data-eq]');
   eqSliders.forEach(function(slider) {
     slider.addEventListener('input', function() {
@@ -1312,35 +1314,16 @@ var panel=document.getElementById('console');
     var display = panel.querySelector('[data-val="eq' + idx + '"]');
     if (display) display.textContent = (val > 0 ? '+' : '') + val.toFixed(1) + ' dB';
   });
-
-  // Mise à jour du remplissage des curseurs
-  function updateSliderFill(slider) {
-    const min = parseFloat(slider.min);
-    const max = parseFloat(slider.max);
-    const val = parseFloat(slider.value);
-    const pct = ((val - min) / (max - min)) * 100;
-    slider.style.setProperty('--p', pct + '%');
-  }
-
-  // Appliquer à tous les curseurs de la console
-  const allSliders = panel.querySelectorAll('input[type=range]');
-  allSliders.forEach(function(s) {
-    updateSliderFill(s);
-    s.addEventListener('input', function() {
-      updateSliderFill(this);
-    });
-  });
-
 })();
 
 // ===================== INIT =====================
 render('Ouvre les stations pour choisir');
 paint();
 
+// Exposer les fonctions
 window.togglePlay = togglePlay;
-window.updateVolume = updateVolume;
-window.updateBalance = updateBalance;
-window.updateEQ = updateEQ;
+window.stopPlayback = stopPlayback;
+window.playStation = playStation;
 
 })();
 </script>
