@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<<!DOCTYPE html>
 <html lang="fr">
 <head>
 <link rel="manifest" href="manifest.webmanifest">
@@ -9,7 +9,6 @@
 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#05060C">
 
 <title>Tuner</title>
@@ -24,13 +23,6 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;height:100%}
-  <script>
-    if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => {
-        navigator.serviceWorker.register("./sw.js");
-    });
-  }
-</script>
   body{
     background:radial-gradient(70% 44% at 10% -6%,rgba(47,231,255,.13),transparent 62%),
                radial-gradient(64% 42% at 94% 2%,rgba(255,61,158,.11),transparent 60%),var(--void);
@@ -748,6 +740,41 @@ function updateEQ() {
   highFilter.gain.value = eqHigh ? parseFloat(eqHigh.value) : 0;
 }
 
+// ===================== WAKE LOCK =====================
+let wakeLock = null;
+
+async function activerWakeLock() {
+  try {
+    if ("wakeLock" in navigator && wakeLock === null) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => {
+        wakeLock = null;
+        console.log("Wake Lock désactivé");
+      });
+      console.log("Wake Lock activé");
+    }
+  } catch (error) {
+    console.log("Wake Lock non disponible :", error.message);
+  }
+}
+
+async function desactiverWakeLock() {
+  if (wakeLock) {
+    try {
+      await wakeLock.release();
+    } catch (error) {
+      console.log("Erreur Wake Lock :", error.message);
+    }
+    wakeLock = null;
+  }
+}
+
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && isPlaying && wakeLock === null) {
+    await activerWakeLock();
+  }
+});
+
 function setStatus(msg) {
   const state = document.getElementById('npState');
   if (state) state.textContent = msg;
@@ -764,6 +791,7 @@ async function togglePlay(station) {
       try { await audioCtx.close(); } catch(e) {}
     }
     isPlaying = false;
+    await desactiverWakeLock();
     audioCtx = null;
     pannerNode = null;
     gainNode = null;
@@ -793,6 +821,7 @@ async function togglePlay(station) {
 
   currentStation = station;
   isPlaying = true;
+  await activerWakeLock();
   const power = document.getElementById('power');
   const power2 = document.getElementById('power2');
   if (power) { power.textContent = '⏹️ Stop'; power.classList.add('stop'); }
@@ -806,6 +835,7 @@ async function togglePlay(station) {
       console.error(err);
     }
     isPlaying = false;
+    await desactiverWakeLock();
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
     if (power2) power2.textContent = '▶';
     bufferFill.style.width = '0%';
@@ -1357,6 +1387,16 @@ window.updateBalance = updateBalance;
 window.updateEQ = updateEQ;
 
 })();
+</script>
+
+<script>
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js")
+      .then(() => console.log("Service Worker installé"))
+      .catch((error) => console.error("Erreur Service Worker:", error));
+  });
+}
 </script>
 </body>
 </html>
