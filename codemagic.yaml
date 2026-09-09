@@ -39,14 +39,15 @@ workflows:
           npx cap sync ios
 
       - name: Configurer la signature iOS
-      script: xcode-project use-profiles
+        script:
+          xcode-project use-profiles
 
-    - name: Générer l'IPA signé
-      script: |
-        cd ios/App
-        xcode-project build-ipa --project App.xcodeproj --scheme App
+      - name: Générer l'IPA signé
+        script: |
+          cd ios/App
+          xcode-project build-ipa --project App.xcodeproj --scheme App
 
-  artifacts:
-    - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
-    - /tmp/xcodebuild_logs/*.log
-    - ios/App/build/ios/ipa/*.ipa
+    artifacts:
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+      - /tmp/xcodebuild_logs/*.log
+      - ios/App/build/ios/ipa/*.ipa
