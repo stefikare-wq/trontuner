@@ -34,10 +34,7 @@ workflows:
         script: |
           npx cap sync ios
 
-      - name: Installer CocoaPods
-        script: |
-          cd ios/App
-          pod install
+   
 
       - name: Compiler pour iOS
         script: |
