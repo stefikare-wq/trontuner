@@ -1,4 +1,4 @@
-<<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
 <link rel="manifest" href="manifest.webmanifest">
@@ -385,395 +385,18 @@
 (function(){
 "use strict";
 
-// ===================== LECTEUR AVEC EQ, VOLUME ET BALANCE =====================
-const CHUNK_SIZE = 384 * 1024;
-const MAX_BUFFER_DURATION = 6.0;
-const MIN_BUFFER_DURATION = 2.5;
-const FADE_DURATION = 0.04;
+// ===================== LECTEUR AUDIO NATIF iOS =====================
+// Utilise <audio> directement afin de laisser iOS gérer la lecture en arrière-plan.
+let nativeAudio = new Audio();
+nativeAudio.preload = 'none';
+nativeAudio.playsInline = true;
 
-let audioCtx = null;
-let gainNode = null;          // Volume
-let pannerNode = null;        // Balance
-let analyserNode = null;
-let scopeAnimationId = null;
-let abortController = null;
 let isPlaying = false;
-let chunksDecoded = 0;
-let nextStartTime = 0;
-let firstChunkScheduled = false;
-let pendingChunks = [];
-let isProcessing = false;
 let currentStation = null;
-
-// Nœuds EQ
-let bassFilter = null;
-let midFilter = null;
-let highFilter = null;
-
-// Analyseurs pour les bandes de fréquences
-let bassAnalyser = null;
-let midAnalyser = null;
-let highAnalyser = null;
-
-// Éléments UI
-const bufferFill = document.getElementById('bufferFill');
-const bufferStatus = document.getElementById('bufferStatus');
-
-function findFrameSync(bytes, fromIndex) {
-  for (let i = fromIndex; i < bytes.length - 1; i++) {
-    if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) return i;
-  }
-  return -1;
-}
-
-function concatUint8(a, b) {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function scheduleBuffer(audioBuffer) {
-  if (!audioCtx) return;
-  
-  try {
-    const source = audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    
-    // Gain pour le fondu
-    const fadeGain = audioCtx.createGain();
-    source.connect(fadeGain);
-    
-    // Chaîne: source -> fadeGain -> panner -> gain (volume) -> EQ -> destination
-    fadeGain.connect(pannerNode);
-    pannerNode.connect(gainNode);
-    gainNode.connect(bassFilter);
-    bassFilter.connect(midFilter);
-    midFilter.connect(highFilter);
-    highFilter.connect(analyserNode);
-    analyserNode.connect(audioCtx.destination);
-    
-    const now = audioCtx.currentTime;
-    let startTime;
-    
-    if (!firstChunkScheduled) {
-      startTime = now + 0.05;
-      firstChunkScheduled = true;
-    } else {
-      startTime = Math.max(nextStartTime, now + 0.01);
-    }
-    
-    const duration = audioBuffer.duration;
-    const fadeDuration = Math.min(FADE_DURATION, duration / 4);
-    
-    fadeGain.gain.setValueAtTime(0, startTime);
-    fadeGain.gain.linearRampToValueAtTime(1, startTime + fadeDuration);
-    fadeGain.gain.setValueAtTime(1, startTime + duration - fadeDuration);
-    fadeGain.gain.linearRampToValueAtTime(0, startTime + duration);
-    
-    source.start(startTime);
-    source.stop(startTime + duration);
-    
-    nextStartTime = startTime + duration;
-    chunksDecoded++;
-    
-    const bufferedDuration = Math.max(0, nextStartTime - audioCtx.currentTime);
-    const pct = Math.min(bufferedDuration / MAX_BUFFER_DURATION, 1);
-    bufferFill.style.width = (pct * 100) + '%';
-    bufferStatus.textContent = 'Buffer: ' + bufferedDuration.toFixed(1) + 's / ' + chunksDecoded + ' seg';
-    
-    if (bufferedDuration < MIN_BUFFER_DURATION && chunksDecoded > 1) {
-      bufferStatus.textContent = '⚠️ Buffer bas: ' + bufferedDuration.toFixed(1) + 's';
-    }
-    
-    return true;
-  } catch (e) {
-    console.warn('Schedule error:', e);
-    return false;
-  }
-}
-
-async function decodeAndSchedule(chunk) {
-  if (isProcessing || !audioCtx) return false;
-  
-  try {
-    isProcessing = true;
-    const arrayBuf = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
-    const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
-    scheduleBuffer(audioBuffer);
-    isProcessing = false;
-    return true;
-  } catch (e) {
-    console.warn('Decode error:', e);
-    isProcessing = false;
-    return false;
-  }
-}
-
-function createAudioContext() {
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  
-  // Panner pour la balance
-  pannerNode = audioCtx.createStereoPanner();
-  pannerNode.pan.value = 0;
-  
-  // Gain pour le volume
-  gainNode = audioCtx.createGain();
-  gainNode.gain.value = 1;
-  
-  // Créer les filtres EQ
-  bassFilter = audioCtx.createBiquadFilter();
-  bassFilter.type = 'lowshelf';
-  bassFilter.frequency.value = 200;
-  bassFilter.gain.value = 0;
-  
-  midFilter = audioCtx.createBiquadFilter();
-  midFilter.type = 'peaking';
-  midFilter.frequency.value = 1000;
-  midFilter.Q.value = 0.7;
-  midFilter.gain.value = 0;
-  
-  highFilter = audioCtx.createBiquadFilter();
-  highFilter.type = 'highshelf';
-  highFilter.frequency.value = 4000;
-  highFilter.gain.value = 0;
-  
-  // Analyseur principal
-  analyserNode = audioCtx.createAnalyser();
-  analyserNode.fftSize = 2048;
-  
-  // Analyseurs pour les 3 bandes de fréquences
-  bassAnalyser = audioCtx.createAnalyser();
-  bassAnalyser.fftSize = 2048;
-  bassAnalyser.smoothingTimeConstant = 0.3;
-  
-  midAnalyser = audioCtx.createAnalyser();
-  midAnalyser.fftSize = 2048;
-  midAnalyser.smoothingTimeConstant = 0.3;
-  
-  highAnalyser = audioCtx.createAnalyser();
-  highAnalyser.fftSize = 2048;
-  highAnalyser.smoothingTimeConstant = 0.3;
-  
-  // Créer des filtres pour séparer les bandes
-  const bassSplit = audioCtx.createBiquadFilter();
-  bassSplit.type = 'lowpass';
-  bassSplit.frequency.value = 250;
-  
-  const midSplit = audioCtx.createBiquadFilter();
-  midSplit.type = 'bandpass';
-  midSplit.frequency.value = 1000;
-  midSplit.Q.value = 0.7;
-  
-  const highSplit = audioCtx.createBiquadFilter();
-  highSplit.type = 'highpass';
-  highSplit.frequency.value = 4000;
-  
-  // Connecter les analyseurs
-  // On prend le signal après l'EQ pour voir l'effet de l'égaliseur
-  highFilter.connect(bassSplit);
-  bassSplit.connect(bassAnalyser);
-  
-  highFilter.connect(midSplit);
-  midSplit.connect(midAnalyser);
-  
-  highFilter.connect(highSplit);
-  highSplit.connect(highAnalyser);
-  
-  // Les analyseurs sont connectés, mais on ne les connecte pas à la destination
-  // pour ne pas avoir de double son
-  
-  return audioCtx;
-}
-
-async function startStream(url, station) {
-  const ctx = createAudioContext();
-  
-  // Gestion iOS
-  const handleVisibilityChange = async () => {
-    if (!document.hidden && ctx && ctx.state === 'suspended') {
-      await ctx.resume();
-    }
-  };
-  document.addEventListener('visibilitychange', handleVisibilityChange);
-  
-  if (ctx.state === 'suspended') {
-    await ctx.resume();
-  }
-  
-  // Appliquer les valeurs initiales
-  updateVolume();
-  updateBalance();
-  updateEQ();
-  
-  nextStartTime = ctx.currentTime + 0.1;
-  chunksDecoded = 0;
-  pendingChunks = [];
-  isProcessing = false;
-  firstChunkScheduled = false;
-
-  abortController = new AbortController();
-  setStatus('⏳ Connexion...');
-
-  const response = await fetch(url, { signal: abortController.signal });
-  if (!response.body) throw new Error("Le flux ne supporte pas le streaming.");
-  const reader = response.body.getReader();
-
-  let accumulated = new Uint8Array(0);
-  let bytesReceived = 0;
-  let processedCount = 0;
-  
-  setStatus('📥 Téléchargement...');
-
-  let processingActive = false;
-  const processQueue = async () => {
-    if (processingActive || !audioCtx) return;
-    processingActive = true;
-    
-    while (pendingChunks.length > 0) {
-      const chunk = pendingChunks.shift();
-      await decodeAndSchedule(chunk);
-      
-      const bufferedDuration = Math.max(0, nextStartTime - audioCtx.currentTime);
-      if (bufferedDuration > MAX_BUFFER_DURATION * 0.7) {
-        break;
-      }
-    }
-    
-    processingActive = false;
-  };
-
-  const processInterval = setInterval(processQueue, 30);
-
-  while (true) {
-    let result;
-    try {
-      result = await reader.read();
-    } catch (e) {
-      break;
-    }
-    const { done, value } = result;
-    if (done) break;
-    
-    accumulated = concatUint8(accumulated, value);
-    bytesReceived += value.length;
-
-    while (accumulated.length >= CHUNK_SIZE) {
-      const syncIndex = findFrameSync(accumulated, 0);
-      if (syncIndex === -1) {
-        if (accumulated.length > CHUNK_SIZE * 2) {
-          accumulated = accumulated.slice(CHUNK_SIZE);
-        }
-        break;
-      }
-      
-      const chunkEnd = Math.min(syncIndex + CHUNK_SIZE, accumulated.length);
-      const chunk = accumulated.slice(syncIndex, chunkEnd);
-      
-      if (chunkEnd < accumulated.length) {
-        accumulated = accumulated.slice(chunkEnd);
-      } else {
-        accumulated = new Uint8Array(0);
-      }
-      
-      pendingChunks.push(chunk);
-      
-      if (pendingChunks.length > 8) {
-        pendingChunks.shift();
-      }
-      
-      processedCount++;
-      
-      if (processedCount <= 5) {
-        await processQueue();
-      }
-    }
-    
-    if (bytesReceived > 1024 * 1024) {
-      setStatus('📦 ' + (bytesReceived / 1024 / 1024).toFixed(1) + 'MB reçus');
-    }
-  }
-  
-  clearInterval(processInterval);
-  document.removeEventListener('visibilitychange', handleVisibilityChange);
-  
-  while (pendingChunks.length > 0 || isProcessing) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-}
-
-// ===================== MISE À JOUR DES PARAMÈTRES =====================
-
-function updateVolume() {
-  if (!gainNode) return;
-  const volSlider = document.getElementById('volume');
-  if (!volSlider) return;
-  const v = parseFloat(volSlider.value);
-  gainNode.gain.value = Math.pow(10, v / 20);
-  const val = document.querySelector('[data-val="gain"]');
-  if (val) {
-    val.textContent = (v > 0 ? '+' : '') + v.toFixed(1) + ' dB';
-  }
-}
-
-function updateBalance() {
-  if (!pannerNode) return;
-  const balSlider = document.getElementById('balance');
-  if (!balSlider) return;
-  const v = parseFloat(balSlider.value);
-  pannerNode.pan.value = v;
-  const val = document.getElementById('balanceVal');
-  if (val) {
-    if (v === 0) val.textContent = 'Centre';
-    else if (v < 0) val.textContent = 'Gauche ' + v.toFixed(2);
-    else val.textContent = 'Droite ' + v.toFixed(2);
-  }
-}
-
-function updateEQ() {
-  if (!bassFilter || !midFilter || !highFilter) return;
-  const eqBass = document.getElementById('eqBass');
-  const eqMid = document.getElementById('eqMid');
-  const eqHigh = document.getElementById('eqHigh');
-  bassFilter.gain.value = eqBass ? parseFloat(eqBass.value) : 0;
-  midFilter.gain.value = eqMid ? parseFloat(eqMid.value) : 0;
-  highFilter.gain.value = eqHigh ? parseFloat(eqHigh.value) : 0;
-}
-
-// ===================== WAKE LOCK =====================
 let wakeLock = null;
 
-async function activerWakeLock() {
-  try {
-    if ("wakeLock" in navigator && wakeLock === null) {
-      wakeLock = await navigator.wakeLock.request("screen");
-      wakeLock.addEventListener("release", () => {
-        wakeLock = null;
-        console.log("Wake Lock désactivé");
-      });
-      console.log("Wake Lock activé");
-    }
-  } catch (error) {
-    console.log("Wake Lock non disponible :", error.message);
-  }
-}
-
-async function desactiverWakeLock() {
-  if (wakeLock) {
-    try {
-      await wakeLock.release();
-    } catch (error) {
-      console.log("Erreur Wake Lock :", error.message);
-    }
-    wakeLock = null;
-  }
-}
-
-document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState === "visible" && isPlaying && wakeLock === null) {
-    await activerWakeLock();
-  }
-});
+const bufferFill = document.getElementById('bufferFill');
+const bufferStatus = document.getElementById('bufferStatus');
 
 function setStatus(msg) {
   const state = document.getElementById('npState');
@@ -782,35 +405,97 @@ function setStatus(msg) {
   if (sub) sub.textContent = msg;
 }
 
+function updateVolume() {
+  const volSlider = document.getElementById('volume');
+  if (!volSlider) return;
+  const db = parseFloat(volSlider.value);
+  // Conversion dB -> volume HTMLAudioElement (0 à 1)
+  nativeAudio.volume = Math.max(0, Math.min(1, Math.pow(10, db / 20)));
+  const val = document.querySelector('[data-val="gain"]');
+  if (val) val.textContent = (db > 0 ? '+' : '') + db.toFixed(1) + ' dB';
+}
+
+// Les réglages avancés restent visibles dans l'interface. Le flux natif est
+// volontairement envoyé directement à iOS pour privilégier la lecture écran verrouillé.
+function updateBalance() {
+  const balSlider = document.getElementById('balance');
+  const val = document.getElementById('balanceVal');
+  if (!balSlider || !val) return;
+  const v = parseFloat(balSlider.value);
+  if (v === 0) val.textContent = 'Centre';
+  else if (v < 0) val.textContent = 'Gauche ' + v.toFixed(2);
+  else val.textContent = 'Droite ' + v.toFixed(2);
+}
+function updateEQ() {}
+
+async function activerWakeLock() {
+  try {
+    if ('wakeLock' in navigator && wakeLock === null) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch (e) {}
+}
+
+async function desactiverWakeLock() {
+  if (wakeLock) {
+    try { await wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+}
+
+function updateMediaSession(station) {
+  if (!('mediaSession' in navigator) || !station) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: station.n || 'Tuner',
+      artist: station.g || 'Radio',
+      album: 'Tuner'
+    });
+    navigator.mediaSession.setActionHandler('play', () => nativeAudio.play());
+    navigator.mediaSession.setActionHandler('pause', () => nativeAudio.pause());
+    navigator.mediaSession.playbackState = 'playing';
+  } catch (e) {}
+}
+
+nativeAudio.addEventListener('playing', () => {
+  isPlaying = true;
+  setStatus('▶️ Lecture en cours');
+  if (bufferFill) bufferFill.style.width = '100%';
+  if (bufferStatus) bufferStatus.textContent = '● Flux audio natif';
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+});
+
+nativeAudio.addEventListener('waiting', () => setStatus('⏳ Mise en mémoire tampon…'));
+
+nativeAudio.addEventListener('pause', () => {
+  if (!nativeAudio.ended && nativeAudio.currentSrc) {
+    isPlaying = false;
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+  }
+});
+
+nativeAudio.addEventListener('error', () => {
+  const code = nativeAudio.error ? nativeAudio.error.code : '';
+  setStatus('❌ Impossible de lire ce flux' + (code ? ' (erreur ' + code + ')' : ''));
+  isPlaying = false;
+});
+
 async function togglePlay(station) {
   if (isPlaying) {
-    if (abortController) {
-      try { abortController.abort(); } catch(e) {}
-    }
-    if (audioCtx && audioCtx.state !== 'closed') {
-      try { await audioCtx.close(); } catch(e) {}
-    }
+    nativeAudio.pause();
+    nativeAudio.removeAttribute('src');
+    nativeAudio.load();
     isPlaying = false;
     await desactiverWakeLock();
-    audioCtx = null;
-    pannerNode = null;
-    gainNode = null;
-    bassFilter = null;
-    midFilter = null;
-    highFilter = null;
-    analyserNode = null;
-    bassAnalyser = null;
-    midAnalyser = null;
-    highAnalyser = null;
-    
+
     const power = document.getElementById('power');
     const power2 = document.getElementById('power2');
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
     if (power2) power2.textContent = '▶';
     setStatus('⏹️ Arrêté.');
-    bufferFill.style.width = '0%';
-    bufferStatus.textContent = 'Buffer: --';
-    pendingChunks = [];
+    if (bufferFill) bufferFill.style.width = '0%';
+    if (bufferStatus) bufferStatus.textContent = 'Buffer: --';
     return;
   }
 
@@ -820,36 +505,35 @@ async function togglePlay(station) {
   }
 
   currentStation = station;
-  isPlaying = true;
-  await activerWakeLock();
   const power = document.getElementById('power');
   const power2 = document.getElementById('power2');
   if (power) { power.textContent = '⏹️ Stop'; power.classList.add('stop'); }
   if (power2) power2.textContent = '❚❚';
 
   try {
-    await startStream(station.u, station);
+    setStatus('⏳ Connexion…');
+    nativeAudio.src = station.u;
+    nativeAudio.load();
+    updateVolume();
+    updateBalance();
+    updateMediaSession(station);
+    await nativeAudio.play();
+    await activerWakeLock();
   } catch (err) {
-    if (err.name !== 'AbortError') {
-      setStatus('❌ ' + err.message);
-      console.error(err);
-    }
+    setStatus('❌ Lecture impossible : ' + (err.message || 'flux non compatible'));
+    console.error(err);
     isPlaying = false;
-    await desactiverWakeLock();
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
     if (power2) power2.textContent = '▶';
-    bufferFill.style.width = '0%';
   }
 }
 
-// Keep-alive pour iOS
-setInterval(async () => {
-  if (audioCtx && isPlaying) {
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
+// Quand l'écran revient au premier plan, on met simplement à jour l'état.
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && isPlaying && wakeLock === null) {
+    await activerWakeLock();
   }
-}, 1000);
+});
 
 // ===================== Stations =====================
 function soma(id,n,c,g,q){ q=q||128;
