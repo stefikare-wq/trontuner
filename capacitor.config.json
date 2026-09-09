@@ -1,5 +1,5 @@
 {
   "appId": "com.stefikare.trontuner",
   "appName": "TronTuner",
-  "webDir": "."
+  "webDir": "www"
 }
