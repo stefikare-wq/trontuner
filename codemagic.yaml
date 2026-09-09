@@ -1,6 +1,7 @@
 workflows:
   trontuner-ios:
-    name: TronTuner iOS
+    name: TronTuner iOS Unsigned
+
     max_build_duration: 120
     instance_type: mac_mini_m2
 
@@ -8,12 +9,9 @@ workflows:
       node: v22.11.0
       xcode: latest
       cocoapods: default
-     
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.stefikare.trontuner
-   
+
     scripts:
+
       - name: Vérifier le projet
         script: |
           echo "=== TronTuner ==="
@@ -32,22 +30,28 @@ workflows:
 
       - name: Créer le projet iOS
         script: |
-          npx cap add ios
+          npx cap add ios || true
 
       - name: Synchroniser l'application web
         script: |
           npx cap sync ios
 
-      - name: Configurer la signature iOS
-        script:
-          xcode-project use-profiles
-
-      - name: Générer l'IPA signé
+      - name: Installer CocoaPods
         script: |
           cd ios/App
-          xcode-project build-ipa --project App.xcodeproj --scheme App
+          pod install
+
+      - name: Compiler iOS sans signature
+        script: |
+          cd ios/App
+
+          xcodebuild build \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO
 
     artifacts:
       - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
       - /tmp/xcodebuild_logs/*.log
-      - ios/App/build/ios/ipa/*.ipa
