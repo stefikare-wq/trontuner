@@ -1,0 +1,50 @@
+workflows:
+  trontuner-ios:
+    name: TronTuner iOS
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+
+    environment:
+      node: v22.11.0
+      xcode: latest
+      cocoapods: default
+
+    scripts:
+      - name: Vérifier le projet
+        script: |
+          echo "=== TronTuner ==="
+          ls -la
+          test -f index.html
+
+      - name: Préparer Capacitor
+        script: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/ios
+
+      - name: Créer le projet iOS
+        script: |
+          npx cap add ios
+
+      - name: Synchroniser l'application web
+        script: |
+          npx cap sync ios
+
+      - name: Installer CocoaPods
+        script: |
+          cd ios/App
+          pod install
+
+      - name: Compiler pour iOS
+        script: |
+          cd ios/App
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+    artifacts:
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+      - /tmp/xcodebuild_logs/*.log
