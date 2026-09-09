@@ -1,16 +1,10 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<link rel="manifest" href="manifest.webmanifest">
-
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="apple-mobile-web-app-title" content="Tuner">
-
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#05060C">
-
 <title>Tuner</title>
 <style>
   :root{
@@ -385,29 +379,520 @@
 (function(){
 "use strict";
 
-// ===================== LECTEUR AUDIO HYBRIDE iOS =====================
-// <audio> reste la source native (meilleure compatibilité écran verrouillé).
-// Web Audio ajoute volume, balance et égaliseur quand iOS le permet.
-let nativeAudio = new Audio();
-nativeAudio.preload = 'none';
-nativeAudio.playsInline = true;
-nativeAudio.crossOrigin = 'anonymous';
+// ===================== LECTEUR AVEC EQ, VOLUME ET BALANCE =====================
+const CHUNK_SIZE = 384 * 1024;
+const MAX_BUFFER_DURATION = 6.0;
+const MIN_BUFFER_DURATION = 2.5;
+const FADE_DURATION = 0.04;
 
 let audioCtx = null;
-let sourceNode = null;
-let gainNode = null;
-let pannerNode = null;
-let bassNode = null;
-let midNode = null;
-let highNode = null;
-let hybridReady = false;
-
+let gainNode = null;          // Volume
+let pannerNode = null;        // Balance
+let analyserNode = null;
+let scopeAnimationId = null;
+let abortController = null;
 let isPlaying = false;
+let chunksDecoded = 0;
+let nextStartTime = 0;
+let firstChunkScheduled = false;
+let pendingChunks = [];
+let isProcessing = false;
 let currentStation = null;
-let wakeLock = null;
 
+// Nœuds EQ
+let bassFilter = null;
+let midFilter = null;
+let highFilter = null;
+
+// Nœuds effets (sous l'égaliseur)
+let lowpassFilter = null;
+let delayNode = null;
+let feedbackGain = null;
+let convolverNode = null;
+let dryGain = null;
+let wetGain = null;
+let limiterNode = null;
+
+// Inversion de la balance (miroir gauche/droite)
+let channelsSwapped = false;
+
+// Crossfeed (stéréo étendue) : matrice de gains fixe
+let cfSplitter = null;
+let cfMerger = null;
+let cfGainLL = null;
+let cfGainLR = null;
+let cfGainRL = null;
+let cfGainRR = null;
+
+// Analyseurs pour les bandes de fréquences
+let bassAnalyser = null;
+let midAnalyser = null;
+let highAnalyser = null;
+
+// Éléments UI
 const bufferFill = document.getElementById('bufferFill');
 const bufferStatus = document.getElementById('bufferStatus');
+
+function findFrameSync(bytes, fromIndex) {
+  for (let i = fromIndex; i < bytes.length - 1; i++) {
+    if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) return i;
+  }
+  return -1;
+}
+
+function concatUint8(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function updateCrossfeed() {
+  if (!cfGainLL || !cfGainLR || !cfGainRL || !cfGainRR) return;
+  const s = document.getElementById('crossfeed');
+  if (!s) return;
+  const amt = parseFloat(s.value);
+  cfGainLL.gain.value = 1 - amt;
+  cfGainRR.gain.value = 1 - amt;
+  cfGainLR.gain.value = amt;
+  cfGainRL.gain.value = amt;
+  const val = document.getElementById('crossfeedVal');
+  if (val) val.textContent = Math.round(amt * 100) + '%';
+}
+
+function createReverbImpulse(ctx, duration, decay) {
+  const rate = ctx.sampleRate;
+  const length = Math.floor(rate * duration);
+  const impulse = ctx.createBuffer(2, length, rate);
+  for (let ch = 0; ch < 2; ch++) {
+    const data = impulse.getChannelData(ch);
+    for (let i = 0; i < length; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+    }
+  }
+  return impulse;
+}
+
+function scheduleBuffer(audioBuffer) {
+  if (!audioCtx) return;
+  
+  try {
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    
+    // Gain pour le fondu
+    const fadeGain = audioCtx.createGain();
+    source.connect(fadeGain);
+    
+    // Chaîne: source -> fadeGain -> crossfeed -> panner (balance) -> gain (volume) -> EQ -> effets -> destination
+    fadeGain.connect(cfSplitter);
+    cfMerger.connect(pannerNode);
+    pannerNode.connect(gainNode);
+    gainNode.connect(bassFilter);
+    bassFilter.connect(midFilter);
+    midFilter.connect(highFilter);
+
+    // Sous l'égaliseur : passe-bas -> split dry/wet (delay+feedback -> reverb) -> limiter
+    highFilter.connect(lowpassFilter);
+    lowpassFilter.connect(dryGain);
+    lowpassFilter.connect(delayNode);
+    delayNode.connect(feedbackGain);
+    feedbackGain.connect(delayNode); // boucle de feedback
+    delayNode.connect(convolverNode);
+    convolverNode.connect(wetGain);
+    dryGain.connect(limiterNode);
+    wetGain.connect(limiterNode);
+    limiterNode.connect(analyserNode);
+    analyserNode.connect(audioCtx.destination);
+    
+    const now = audioCtx.currentTime;
+    let startTime;
+    
+    if (!firstChunkScheduled) {
+      startTime = now + 0.05;
+      firstChunkScheduled = true;
+    } else {
+      startTime = Math.max(nextStartTime, now + 0.01);
+    }
+    
+    const duration = audioBuffer.duration;
+    const fadeDuration = Math.min(FADE_DURATION, duration / 4);
+    
+    fadeGain.gain.setValueAtTime(0, startTime);
+    fadeGain.gain.linearRampToValueAtTime(1, startTime + fadeDuration);
+    fadeGain.gain.setValueAtTime(1, startTime + duration - fadeDuration);
+    fadeGain.gain.linearRampToValueAtTime(0, startTime + duration);
+    
+    source.start(startTime);
+    source.stop(startTime + duration);
+    
+    nextStartTime = startTime + duration;
+    chunksDecoded++;
+    
+    const bufferedDuration = Math.max(0, nextStartTime - audioCtx.currentTime);
+    const pct = Math.min(bufferedDuration / MAX_BUFFER_DURATION, 1);
+    bufferFill.style.width = (pct * 100) + '%';
+    bufferStatus.textContent = 'Buffer: ' + bufferedDuration.toFixed(1) + 's / ' + chunksDecoded + ' seg';
+    
+    if (bufferedDuration < MIN_BUFFER_DURATION && chunksDecoded > 1) {
+      bufferStatus.textContent = '⚠️ Buffer bas: ' + bufferedDuration.toFixed(1) + 's';
+    }
+    
+    return true;
+  } catch (e) {
+    console.warn('Schedule error:', e);
+    return false;
+  }
+}
+
+async function decodeAndSchedule(chunk) {
+  if (isProcessing || !audioCtx) return false;
+  
+  try {
+    isProcessing = true;
+    const arrayBuf = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuf);
+    scheduleBuffer(audioBuffer);
+    isProcessing = false;
+    return true;
+  } catch (e) {
+    console.warn('Decode error:', e);
+    isProcessing = false;
+    return false;
+  }
+}
+
+function createAudioContext() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  
+  // Panner pour la balance
+  pannerNode = audioCtx.createStereoPanner();
+  pannerNode.pan.value = 0;
+  
+  // Gain pour le volume
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = 1;
+  
+  // Créer les filtres EQ
+  bassFilter = audioCtx.createBiquadFilter();
+  bassFilter.type = 'lowshelf';
+  bassFilter.frequency.value = 200;
+  bassFilter.gain.value = 0;
+  
+  midFilter = audioCtx.createBiquadFilter();
+  midFilter.type = 'peaking';
+  midFilter.frequency.value = 1000;
+  midFilter.Q.value = 0.7;
+  midFilter.gain.value = 0;
+  
+  highFilter = audioCtx.createBiquadFilter();
+  highFilter.type = 'highshelf';
+  highFilter.frequency.value = 4000;
+  highFilter.gain.value = 0;
+
+  // Filtre passe-bas (effet, sous l'EQ)
+  lowpassFilter = audioCtx.createBiquadFilter();
+  lowpassFilter.type = 'lowpass';
+  lowpassFilter.frequency.value = 20000;
+
+  // Delay + feedback (écho répété)
+  delayNode = audioCtx.createDelay(2.0);
+  delayNode.delayTime.value = 0.35;
+  feedbackGain = audioCtx.createGain();
+  feedbackGain.gain.value = 0;
+
+  // Reverb par convolution (impulse response générée)
+  convolverNode = audioCtx.createConvolver();
+  convolverNode.buffer = createReverbImpulse(audioCtx, 2.5, 2.5);
+
+  // Mix dry/wet
+  dryGain = audioCtx.createGain();
+  dryGain.gain.value = 1;
+  wetGain = audioCtx.createGain();
+  wetGain.gain.value = 0;
+
+  // Limiter final (compresseur agressif)
+  limiterNode = audioCtx.createDynamicsCompressor();
+  limiterNode.threshold.value = -6;
+  limiterNode.knee.value = 0;
+  limiterNode.ratio.value = 20;
+  limiterNode.attack.value = 0.003;
+  limiterNode.release.value = 0.1;
+
+  // Crossfeed (stéréo étendue) : montage fixe, on ne fait que changer les gains
+  cfSplitter = audioCtx.createChannelSplitter(2);
+  cfMerger = audioCtx.createChannelMerger(2);
+  cfGainLL = audioCtx.createGain();
+  cfGainLR = audioCtx.createGain();
+  cfGainRL = audioCtx.createGain();
+  cfGainRR = audioCtx.createGain();
+
+  cfSplitter.connect(cfGainLL, 0);
+  cfSplitter.connect(cfGainLR, 0);
+  cfSplitter.connect(cfGainRL, 1);
+  cfSplitter.connect(cfGainRR, 1);
+
+  cfGainLL.connect(cfMerger, 0, 0);
+  cfGainRL.connect(cfMerger, 0, 0);
+  cfGainLR.connect(cfMerger, 0, 1);
+  cfGainRR.connect(cfMerger, 0, 1);
+
+  updateCrossfeed();
+  
+  // Analyseur principal
+  analyserNode = audioCtx.createAnalyser();
+  analyserNode.fftSize = 2048;
+  
+  // Analyseurs pour les 3 bandes de fréquences
+  bassAnalyser = audioCtx.createAnalyser();
+  bassAnalyser.fftSize = 2048;
+  bassAnalyser.smoothingTimeConstant = 0.3;
+  
+  midAnalyser = audioCtx.createAnalyser();
+  midAnalyser.fftSize = 2048;
+  midAnalyser.smoothingTimeConstant = 0.3;
+  
+  highAnalyser = audioCtx.createAnalyser();
+  highAnalyser.fftSize = 2048;
+  highAnalyser.smoothingTimeConstant = 0.3;
+  
+  // Créer des filtres pour séparer les bandes
+  const bassSplit = audioCtx.createBiquadFilter();
+  bassSplit.type = 'lowpass';
+  bassSplit.frequency.value = 250;
+  
+  const midSplit = audioCtx.createBiquadFilter();
+  midSplit.type = 'bandpass';
+  midSplit.frequency.value = 1000;
+  midSplit.Q.value = 0.7;
+  
+  const highSplit = audioCtx.createBiquadFilter();
+  highSplit.type = 'highpass';
+  highSplit.frequency.value = 4000;
+  
+  // Connecter les analyseurs
+  // On prend le signal après l'EQ pour voir l'effet de l'égaliseur
+  highFilter.connect(bassSplit);
+  bassSplit.connect(bassAnalyser);
+  
+  highFilter.connect(midSplit);
+  midSplit.connect(midAnalyser);
+  
+  highFilter.connect(highSplit);
+  highSplit.connect(highAnalyser);
+  
+  // Les analyseurs sont connectés, mais on ne les connecte pas à la destination
+  // pour ne pas avoir de double son
+  
+  return audioCtx;
+}
+
+async function startStream(url, station) {
+  const ctx = createAudioContext();
+  
+  // Gestion iOS
+  const handleVisibilityChange = async () => {
+    if (!document.hidden && ctx && ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+  };
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  
+  if (ctx.state === 'suspended') {
+    await ctx.resume();
+  }
+  
+  // Appliquer les valeurs initiales
+  updateVolume();
+  updateBalance();
+  updateCrossfeed();
+  updateEQ();
+  updateLowpass();
+  updateFeedback();
+  updateDryWet();
+  updateLimiter();
+  
+  nextStartTime = ctx.currentTime + 0.1;
+  chunksDecoded = 0;
+  pendingChunks = [];
+  isProcessing = false;
+  firstChunkScheduled = false;
+
+  abortController = new AbortController();
+  setStatus('⏳ Connexion...');
+
+  const response = await fetch(url, { signal: abortController.signal });
+  if (!response.body) throw new Error("Le flux ne supporte pas le streaming.");
+  const reader = response.body.getReader();
+
+  let accumulated = new Uint8Array(0);
+  let bytesReceived = 0;
+  let processedCount = 0;
+  
+  setStatus('📥 Téléchargement...');
+
+  let processingActive = false;
+  const processQueue = async () => {
+    if (processingActive || !audioCtx) return;
+    processingActive = true;
+    
+    while (pendingChunks.length > 0) {
+      const chunk = pendingChunks.shift();
+      await decodeAndSchedule(chunk);
+      
+      const bufferedDuration = Math.max(0, nextStartTime - audioCtx.currentTime);
+      if (bufferedDuration > MAX_BUFFER_DURATION * 0.7) {
+        break;
+      }
+    }
+    
+    processingActive = false;
+  };
+
+  const processInterval = setInterval(processQueue, 30);
+
+  while (true) {
+    let result;
+    try {
+      result = await reader.read();
+    } catch (e) {
+      break;
+    }
+    const { done, value } = result;
+    if (done) break;
+    
+    accumulated = concatUint8(accumulated, value);
+    bytesReceived += value.length;
+
+    while (accumulated.length >= CHUNK_SIZE) {
+      const syncIndex = findFrameSync(accumulated, 0);
+      if (syncIndex === -1) {
+        if (accumulated.length > CHUNK_SIZE * 2) {
+          accumulated = accumulated.slice(CHUNK_SIZE);
+        }
+        break;
+      }
+      
+      const chunkEnd = Math.min(syncIndex + CHUNK_SIZE, accumulated.length);
+      const chunk = accumulated.slice(syncIndex, chunkEnd);
+      
+      if (chunkEnd < accumulated.length) {
+        accumulated = accumulated.slice(chunkEnd);
+      } else {
+        accumulated = new Uint8Array(0);
+      }
+      
+      pendingChunks.push(chunk);
+      
+      if (pendingChunks.length > 8) {
+        pendingChunks.shift();
+      }
+      
+      processedCount++;
+      
+      if (processedCount <= 5) {
+        await processQueue();
+      }
+    }
+    
+    if (bytesReceived > 1024 * 1024) {
+      setStatus('📦 ' + (bytesReceived / 1024 / 1024).toFixed(1) + 'MB reçus');
+    }
+  }
+  
+  clearInterval(processInterval);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  
+  while (pendingChunks.length > 0 || isProcessing) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+// ===================== MISE À JOUR DES PARAMÈTRES =====================
+
+function updateVolume() {
+  if (!gainNode) return;
+  const volSlider = document.getElementById('volume');
+  if (!volSlider) return;
+  const v = parseFloat(volSlider.value);
+  gainNode.gain.value = Math.pow(10, v / 20);
+  const val = document.querySelector('[data-val="gain"]');
+  if (val) {
+    val.textContent = (v > 0 ? '+' : '') + v.toFixed(1) + ' dB';
+  }
+}
+
+function updateBalance() {
+  if (!pannerNode) return;
+  const balSlider = document.getElementById('balance');
+  if (!balSlider) return;
+  let v = parseFloat(balSlider.value);
+  if (channelsSwapped) v = -v; // miroir gauche/droite
+  pannerNode.pan.value = v;
+  const val = document.getElementById('balanceVal');
+  if (val) {
+    if (v === 0) val.textContent = 'Centre';
+    else if (v < 0) val.textContent = 'Gauche ' + v.toFixed(2);
+    else val.textContent = 'Droite ' + v.toFixed(2);
+  }
+}
+
+function updateEQ() {
+  if (!bassFilter || !midFilter || !highFilter) return;
+  const eqBass = document.getElementById('eqBass');
+  const eqMid = document.getElementById('eqMid');
+  const eqHigh = document.getElementById('eqHigh');
+  bassFilter.gain.value = eqBass ? parseFloat(eqBass.value) : 0;
+  midFilter.gain.value = eqMid ? parseFloat(eqMid.value) : 0;
+  highFilter.gain.value = eqHigh ? parseFloat(eqHigh.value) : 0;
+}
+
+function updateLowpass() {
+  if (!lowpassFilter) return;
+  const s = document.getElementById('lowpass');
+  if (!s) return;
+  const v = parseFloat(s.value);
+  lowpassFilter.frequency.value = v;
+  const val = document.getElementById('lowpassVal');
+  if (val) val.textContent = v + ' Hz' + (v >= 20000 ? ' (off)' : '');
+}
+
+function updateFeedback() {
+  if (!feedbackGain) return;
+  const s = document.getElementById('feedback');
+  if (!s) return;
+  const v = parseFloat(s.value);
+  feedbackGain.gain.value = v;
+  const val = document.getElementById('feedbackVal');
+  if (val) val.textContent = Math.round(v * 100) + '%';
+}
+
+function updateDryWet() {
+  const mixSlider = document.getElementById('drywet');
+  const reverbSlider = document.getElementById('reverb');
+  if (!mixSlider || !reverbSlider) return;
+  const mix = parseFloat(mixSlider.value);
+  const reverbAmount = parseFloat(reverbSlider.value);
+  if (dryGain) dryGain.gain.value = 1 - mix;
+  if (wetGain) wetGain.gain.value = mix * (0.3 + reverbAmount * 0.7);
+  const val = document.getElementById('drywetVal');
+  if (val) {
+    val.textContent = mix === 0 ? '100% dry' : mix === 1 ? '100% wet' :
+      Math.round((1 - mix) * 100) + '% dry / ' + Math.round(mix * 100) + '% wet';
+  }
+  const rval = document.getElementById('reverbVal');
+  if (rval) rval.textContent = Math.round(reverbAmount * 100) + '%';
+}
+
+function updateLimiter() {
+  if (!limiterNode) return;
+  const s = document.getElementById('limiter');
+  if (!s) return;
+  const v = parseFloat(s.value);
+  limiterNode.threshold.value = v;
+  const val = document.getElementById('limiterVal');
+  if (val) val.textContent = v + ' dB';
+}
 
 function setStatus(msg) {
   const state = document.getElementById('npState');
@@ -416,185 +901,47 @@ function setStatus(msg) {
   if (sub) sub.textContent = msg;
 }
 
-function dbToGain(db) {
-  return Math.pow(10, Number(db || 0) / 20);
-}
-
-async function initHybridAudio() {
-  if (hybridReady) return true;
-
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return false;
-
-    audioCtx = new AC();
-    sourceNode = audioCtx.createMediaElementSource(nativeAudio);
-
-    bassNode = audioCtx.createBiquadFilter();
-    bassNode.type = 'lowshelf';
-    bassNode.frequency.value = 180;
-
-    midNode = audioCtx.createBiquadFilter();
-    midNode.type = 'peaking';
-    midNode.frequency.value = 1200;
-    midNode.Q.value = 0.9;
-
-    highNode = audioCtx.createBiquadFilter();
-    highNode.type = 'highshelf';
-    highNode.frequency.value = 5000;
-
-    gainNode = audioCtx.createGain();
-
-    if (audioCtx.createStereoPanner) {
-      pannerNode = audioCtx.createStereoPanner();
-      sourceNode.connect(bassNode);
-      bassNode.connect(midNode);
-      midNode.connect(highNode);
-      highNode.connect(gainNode);
-      gainNode.connect(pannerNode);
-      pannerNode.connect(audioCtx.destination);
-    } else {
-      // Fallback : volume + EQ, sans vraie balance stéréo.
-      sourceNode.connect(bassNode);
-      bassNode.connect(midNode);
-      midNode.connect(highNode);
-      highNode.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-    }
-
-    hybridReady = true;
-    updateVolume();
-    updateBalance();
-    updateEQ();
-    return true;
-  } catch (e) {
-    console.warn('Mode hybride indisponible, retour audio natif :', e);
-    hybridReady = false;
-    return false;
-  }
-}
-
-function updateVolume() {
-  const volSlider = document.getElementById('volume');
-  if (!volSlider) return;
-  const db = parseFloat(volSlider.value);
-
-  const val = document.querySelector('[data-val="gain"]');
-  if (val) val.textContent = (db > 0 ? '+' : '') + db.toFixed(1) + ' dB';
-
-  if (hybridReady && gainNode) {
-    gainNode.gain.setTargetAtTime(dbToGain(db), audioCtx.currentTime, 0.02);
-    // Laisser l'élément à 100 % pour que le gain Web Audio fasse le réglage.
-    nativeAudio.volume = 1;
-  } else {
-    // Mode de secours natif.
-    nativeAudio.volume = Math.max(0, Math.min(1, dbToGain(db)));
-  }
-}
-
-function updateBalance() {
-  const balSlider = document.getElementById('balance');
-  const val = document.getElementById('balanceVal');
-  if (!balSlider || !val) return;
-
-  const v = parseFloat(balSlider.value);
-  if (Math.abs(v) < 0.005) val.textContent = 'Centre';
-  else if (v < 0) val.textContent = 'Gauche ' + Math.abs(v).toFixed(2);
-  else val.textContent = 'Droite ' + v.toFixed(2);
-
-  if (hybridReady && pannerNode && audioCtx) {
-    pannerNode.pan.setTargetAtTime(v, audioCtx.currentTime, 0.02);
-  }
-}
-
-function updateEQ() {
-  const bass = document.getElementById('eqBass');
-  const mid = document.getElementById('eqMid');
-  const high = document.getElementById('eqHigh');
-
-  if (!hybridReady || !audioCtx) return;
-
-  if (bass && bassNode)
-    bassNode.gain.setTargetAtTime(parseFloat(bass.value), audioCtx.currentTime, 0.02);
-  if (mid && midNode)
-    midNode.gain.setTargetAtTime(parseFloat(mid.value), audioCtx.currentTime, 0.02);
-  if (high && highNode)
-    highNode.gain.setTargetAtTime(parseFloat(high.value), audioCtx.currentTime, 0.02);
-}
-
-async function activerWakeLock() {
-  try {
-    if ('wakeLock' in navigator && wakeLock === null) {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => { wakeLock = null; });
-    }
-  } catch (e) {}
-}
-
-async function desactiverWakeLock() {
-  if (wakeLock) {
-    try { await wakeLock.release(); } catch (e) {}
-    wakeLock = null;
-  }
-}
-
-function updateMediaSession(station) {
-  if (!('mediaSession' in navigator) || !station) return;
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: station.n || 'Tuner',
-      artist: station.g || 'Radio',
-      album: 'Tuner'
-    });
-    navigator.mediaSession.setActionHandler('play', async () => {
-      if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
-      await nativeAudio.play();
-    });
-    navigator.mediaSession.setActionHandler('pause', () => nativeAudio.pause());
-    navigator.mediaSession.playbackState = 'playing';
-  } catch (e) {}
-}
-
-nativeAudio.addEventListener('playing', () => {
-  isPlaying = true;
-  setStatus('▶️ Lecture en cours');
-  if (bufferFill) bufferFill.style.width = '100%';
-  if (bufferStatus) bufferStatus.textContent = hybridReady
-    ? '● Audio hybride actif'
-    : '● Flux audio natif';
-  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-});
-
-nativeAudio.addEventListener('waiting', () => setStatus('⏳ Mise en mémoire tampon…'));
-
-nativeAudio.addEventListener('pause', () => {
-  if (!nativeAudio.ended && nativeAudio.currentSrc) {
-    isPlaying = false;
-    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
-  }
-});
-
-nativeAudio.addEventListener('error', () => {
-  const code = nativeAudio.error ? nativeAudio.error.code : '';
-  setStatus('❌ Impossible de lire ce flux' + (code ? ' (erreur ' + code + ')' : ''));
-  isPlaying = false;
-});
-
 async function togglePlay(station) {
   if (isPlaying) {
-    nativeAudio.pause();
-    nativeAudio.removeAttribute('src');
-    nativeAudio.load();
+    if (abortController) {
+      try { abortController.abort(); } catch(e) {}
+    }
+    if (audioCtx && audioCtx.state !== 'closed') {
+      try { await audioCtx.close(); } catch(e) {}
+    }
     isPlaying = false;
-    await desactiverWakeLock();
-
+    audioCtx = null;
+    pannerNode = null;
+    gainNode = null;
+    bassFilter = null;
+    midFilter = null;
+    highFilter = null;
+    analyserNode = null;
+    bassAnalyser = null;
+    midAnalyser = null;
+    highAnalyser = null;
+    lowpassFilter = null;
+    delayNode = null;
+    feedbackGain = null;
+    convolverNode = null;
+    dryGain = null;
+    wetGain = null;
+    limiterNode = null;
+    cfSplitter = null;
+    cfMerger = null;
+    cfGainLL = null;
+    cfGainLR = null;
+    cfGainRL = null;
+    cfGainRR = null;
+    
     const power = document.getElementById('power');
     const power2 = document.getElementById('power2');
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
     if (power2) power2.textContent = '▶';
     setStatus('⏹️ Arrêté.');
-    if (bufferFill) bufferFill.style.width = '0%';
-    if (bufferStatus) bufferStatus.textContent = 'Buffer: --';
+    bufferFill.style.width = '0%';
+    bufferStatus.textContent = 'Buffer: --';
+    pendingChunks = [];
     return;
   }
 
@@ -604,44 +951,34 @@ async function togglePlay(station) {
   }
 
   currentStation = station;
+  isPlaying = true;
   const power = document.getElementById('power');
   const power2 = document.getElementById('power2');
   if (power) { power.textContent = '⏹️ Stop'; power.classList.add('stop'); }
   if (power2) power2.textContent = '❚❚';
 
   try {
-    setStatus('⏳ Connexion…');
-
-    // Initialisé pendant le geste utilisateur : nécessaire sur iOS.
-    const hybridOK = await initHybridAudio();
-    if (hybridOK && audioCtx && audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
-
-    nativeAudio.src = station.u;
-    nativeAudio.load();
-    updateVolume();
-    updateBalance();
-    updateEQ();
-    updateMediaSession(station);
-
-    await nativeAudio.play();
-    await activerWakeLock();
+    await startStream(station.u, station);
   } catch (err) {
-    setStatus('❌ Lecture impossible : ' + (err.message || 'flux non compatible'));
-    console.error(err);
+    if (err.name !== 'AbortError') {
+      setStatus('❌ ' + err.message);
+      console.error(err);
+    }
     isPlaying = false;
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
     if (power2) power2.textContent = '▶';
+    bufferFill.style.width = '0%';
   }
 }
 
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible') {
-    if (isPlaying && wakeLock === null) await activerWakeLock();
-    // Ne force pas resume() ici : iOS décide du comportement arrière-plan.
+// Keep-alive pour iOS
+setInterval(async () => {
+  if (audioCtx && isPlaying) {
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
   }
-});
+}, 1000);
 
 // ===================== Stations =====================
 function soma(id,n,c,g,q){ q=q||128;
@@ -779,6 +1116,9 @@ function playStation(st){
   bump(st);
   togglePlay(st);
 }
+
+if (power) power.addEventListener('click', function(){ togglePlay(currentStation); });
+if (power2) power2.addEventListener('click', function(){ togglePlay(currentStation); });
 
 // ===================== Liste =====================
 var tabsEl=document.getElementById('tabs'), listEl=document.getElementById('list');
@@ -1109,6 +1449,9 @@ var panel=document.getElementById('console');
        +'<div class="fader" style="margin-top:6px"><div class="fhead"><span class="lbl">Balance</span>'
        +'<span class="val" id="balanceVal">Centre</span></div>'
        +'<input type="range" id="balance" class="big" min="-1" max="1" step="0.01" value="0" style="--c:#FF3D9E"></div>'
+       +'<div class="fader" style="margin-top:6px"><div class="fhead"><span class="lbl">Stéréo étendue (crossfeed)</span>'
+       +'<span class="val" id="crossfeedVal">0%</span></div>'
+       +'<input type="range" id="crossfeed" class="big" min="0" max="1" step="0.01" value="0" style="--c:#B9FF45"></div>'
        +'</div>'
        +'<div class="mods"><div class="mod"><h3>ÉGALISEUR 3 BANDES</h3>';
   ['Bass','Medium','High'].forEach(function(lbl,k){
@@ -1118,7 +1461,24 @@ var panel=document.getElementById('console');
       +'<span class="val" data-val="eq'+k+'"></span></div>'
       +'<input type="range" id="'+id+'" data-eq="'+k+'" min="-24" max="24" step="0.5" value="0" style="--c:'+col+'"></div>';
   });
-  h+='</div></div></div>';
+  h+='</div></div>'
+   +'<div class="mod"><h3>EFFETS</h3>'
+   +'<div class="fader"><div class="fhead"><span class="lbl">Passe-bas</span>'
+   +'<span class="val" id="lowpassVal">20000 Hz (off)</span></div>'
+   +'<input type="range" id="lowpass" min="200" max="20000" step="100" value="20000" style="--c:#FFC24B"></div>'
+   +'<div class="fader"><div class="fhead"><span class="lbl">Feedback</span>'
+   +'<span class="val" id="feedbackVal">0%</span></div>'
+   +'<input type="range" id="feedback" min="0" max="0.9" step="0.01" value="0" style="--c:#FF3D9E"></div>'
+   +'<div class="fader"><div class="fhead"><span class="lbl">Reverb</span>'
+   +'<span class="val" id="reverbVal">0%</span></div>'
+   +'<input type="range" id="reverb" min="0" max="1" step="0.01" value="0" style="--c:#2FE7FF"></div>'
+   +'<div class="fader"><div class="fhead"><span class="lbl">Dry / Wet</span>'
+   +'<span class="val" id="drywetVal">100% dry</span></div>'
+   +'<input type="range" id="drywet" min="0" max="1" step="0.01" value="0" style="--c:#B9FF45"></div>'
+   +'<div class="fader"><div class="fhead"><span class="lbl">Limiter</span>'
+   +'<span class="val" id="limiterVal">-6 dB</span></div>'
+   +'<input type="range" id="limiter" min="-40" max="0" step="1" value="-6" style="--c:#FFC24B"></div>'
+   +'</div></div>';
   panel.innerHTML=h;
 
   // Volume
@@ -1130,6 +1490,10 @@ var panel=document.getElementById('console');
   var balSlider = document.getElementById('balance');
   balSlider.addEventListener('input', function() { updateBalance(); });
   updateBalance();
+
+  // Crossfeed (stéréo étendue)
+  var cfSlider = document.getElementById('crossfeed');
+  if (cfSlider) cfSlider.addEventListener('input', function() { updateCrossfeed(); });
 
   // EQ
   var eqSliders = panel.querySelectorAll('[data-eq]');
@@ -1148,6 +1512,31 @@ var panel=document.getElementById('console');
     var display = panel.querySelector('[data-val="eq' + idx + '"]');
     if (display) display.textContent = (val > 0 ? '+' : '') + val.toFixed(1) + ' dB';
   });
+
+  // Effets (sous l'égaliseur)
+  var lowpassSlider = document.getElementById('lowpass');
+  if (lowpassSlider) lowpassSlider.addEventListener('input', function() { updateLowpass(); });
+
+  var feedbackSlider = document.getElementById('feedback');
+  if (feedbackSlider) feedbackSlider.addEventListener('input', function() { updateFeedback(); });
+
+  var reverbSlider = document.getElementById('reverb');
+  if (reverbSlider) reverbSlider.addEventListener('input', function() { updateDryWet(); });
+
+  var drywetSlider = document.getElementById('drywet');
+  if (drywetSlider) drywetSlider.addEventListener('input', function() { updateDryWet(); });
+
+  var limiterSlider = document.getElementById('limiter');
+  if (limiterSlider) limiterSlider.addEventListener('input', function() { updateLimiter(); });
+
+  var swapBtn = panel.querySelector('[data-swap]');
+  if (swapBtn) {
+    swapBtn.addEventListener('click', function() {
+      channelsSwapped = !channelsSwapped;
+      swapBtn.classList.toggle('on', channelsSwapped);
+      updateBalance();
+    });
+  }
 
   // Mise à jour du remplissage des curseurs
   function updateSliderFill(slider) {
@@ -1177,18 +1566,12 @@ window.togglePlay = togglePlay;
 window.updateVolume = updateVolume;
 window.updateBalance = updateBalance;
 window.updateEQ = updateEQ;
+window.updateLowpass = updateLowpass;
+window.updateFeedback = updateFeedback;
+window.updateDryWet = updateDryWet;
+window.updateLimiter = updateLimiter;
 
 })();
-</script>
-
-<script>
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js")
-      .then(() => console.log("Service Worker installé"))
-      .catch((error) => console.error("Erreur Service Worker:", error));
-  });
-}
 </script>
 </body>
 </html>
