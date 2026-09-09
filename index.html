@@ -24,6 +24,13 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;height:100%}
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js");
+    });
+  }
+</script>
   body{
     background:radial-gradient(70% 44% at 10% -6%,rgba(47,231,255,.13),transparent 62%),
                radial-gradient(64% 42% at 94% 2%,rgba(255,61,158,.11),transparent 60%),var(--void);
