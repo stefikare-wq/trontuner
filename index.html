@@ -385,11 +385,22 @@
 (function(){
 "use strict";
 
-// ===================== LECTEUR AUDIO NATIF iOS =====================
-// Utilise <audio> directement afin de laisser iOS gérer la lecture en arrière-plan.
+// ===================== LECTEUR AUDIO HYBRIDE iOS =====================
+// <audio> reste la source native (meilleure compatibilité écran verrouillé).
+// Web Audio ajoute volume, balance et égaliseur quand iOS le permet.
 let nativeAudio = new Audio();
 nativeAudio.preload = 'none';
 nativeAudio.playsInline = true;
+nativeAudio.crossOrigin = 'anonymous';
+
+let audioCtx = null;
+let sourceNode = null;
+let gainNode = null;
+let pannerNode = null;
+let bassNode = null;
+let midNode = null;
+let highNode = null;
+let hybridReady = false;
 
 let isPlaying = false;
 let currentStation = null;
@@ -405,28 +416,111 @@ function setStatus(msg) {
   if (sub) sub.textContent = msg;
 }
 
+function dbToGain(db) {
+  return Math.pow(10, Number(db || 0) / 20);
+}
+
+async function initHybridAudio() {
+  if (hybridReady) return true;
+
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return false;
+
+    audioCtx = new AC();
+    sourceNode = audioCtx.createMediaElementSource(nativeAudio);
+
+    bassNode = audioCtx.createBiquadFilter();
+    bassNode.type = 'lowshelf';
+    bassNode.frequency.value = 180;
+
+    midNode = audioCtx.createBiquadFilter();
+    midNode.type = 'peaking';
+    midNode.frequency.value = 1200;
+    midNode.Q.value = 0.9;
+
+    highNode = audioCtx.createBiquadFilter();
+    highNode.type = 'highshelf';
+    highNode.frequency.value = 5000;
+
+    gainNode = audioCtx.createGain();
+
+    if (audioCtx.createStereoPanner) {
+      pannerNode = audioCtx.createStereoPanner();
+      sourceNode.connect(bassNode);
+      bassNode.connect(midNode);
+      midNode.connect(highNode);
+      highNode.connect(gainNode);
+      gainNode.connect(pannerNode);
+      pannerNode.connect(audioCtx.destination);
+    } else {
+      // Fallback : volume + EQ, sans vraie balance stéréo.
+      sourceNode.connect(bassNode);
+      bassNode.connect(midNode);
+      midNode.connect(highNode);
+      highNode.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+    }
+
+    hybridReady = true;
+    updateVolume();
+    updateBalance();
+    updateEQ();
+    return true;
+  } catch (e) {
+    console.warn('Mode hybride indisponible, retour audio natif :', e);
+    hybridReady = false;
+    return false;
+  }
+}
+
 function updateVolume() {
   const volSlider = document.getElementById('volume');
   if (!volSlider) return;
   const db = parseFloat(volSlider.value);
-  // Conversion dB -> volume HTMLAudioElement (0 à 1)
-  nativeAudio.volume = Math.max(0, Math.min(1, Math.pow(10, db / 20)));
+
   const val = document.querySelector('[data-val="gain"]');
   if (val) val.textContent = (db > 0 ? '+' : '') + db.toFixed(1) + ' dB';
+
+  if (hybridReady && gainNode) {
+    gainNode.gain.setTargetAtTime(dbToGain(db), audioCtx.currentTime, 0.02);
+    // Laisser l'élément à 100 % pour que le gain Web Audio fasse le réglage.
+    nativeAudio.volume = 1;
+  } else {
+    // Mode de secours natif.
+    nativeAudio.volume = Math.max(0, Math.min(1, dbToGain(db)));
+  }
 }
 
-// Les réglages avancés restent visibles dans l'interface. Le flux natif est
-// volontairement envoyé directement à iOS pour privilégier la lecture écran verrouillé.
 function updateBalance() {
   const balSlider = document.getElementById('balance');
   const val = document.getElementById('balanceVal');
   if (!balSlider || !val) return;
+
   const v = parseFloat(balSlider.value);
-  if (v === 0) val.textContent = 'Centre';
-  else if (v < 0) val.textContent = 'Gauche ' + v.toFixed(2);
+  if (Math.abs(v) < 0.005) val.textContent = 'Centre';
+  else if (v < 0) val.textContent = 'Gauche ' + Math.abs(v).toFixed(2);
   else val.textContent = 'Droite ' + v.toFixed(2);
+
+  if (hybridReady && pannerNode && audioCtx) {
+    pannerNode.pan.setTargetAtTime(v, audioCtx.currentTime, 0.02);
+  }
 }
-function updateEQ() {}
+
+function updateEQ() {
+  const bass = document.getElementById('eqBass');
+  const mid = document.getElementById('eqMid');
+  const high = document.getElementById('eqHigh');
+
+  if (!hybridReady || !audioCtx) return;
+
+  if (bass && bassNode)
+    bassNode.gain.setTargetAtTime(parseFloat(bass.value), audioCtx.currentTime, 0.02);
+  if (mid && midNode)
+    midNode.gain.setTargetAtTime(parseFloat(mid.value), audioCtx.currentTime, 0.02);
+  if (high && highNode)
+    highNode.gain.setTargetAtTime(parseFloat(high.value), audioCtx.currentTime, 0.02);
+}
 
 async function activerWakeLock() {
   try {
@@ -452,7 +546,10 @@ function updateMediaSession(station) {
       artist: station.g || 'Radio',
       album: 'Tuner'
     });
-    navigator.mediaSession.setActionHandler('play', () => nativeAudio.play());
+    navigator.mediaSession.setActionHandler('play', async () => {
+      if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
+      await nativeAudio.play();
+    });
     navigator.mediaSession.setActionHandler('pause', () => nativeAudio.pause());
     navigator.mediaSession.playbackState = 'playing';
   } catch (e) {}
@@ -462,7 +559,9 @@ nativeAudio.addEventListener('playing', () => {
   isPlaying = true;
   setStatus('▶️ Lecture en cours');
   if (bufferFill) bufferFill.style.width = '100%';
-  if (bufferStatus) bufferStatus.textContent = '● Flux audio natif';
+  if (bufferStatus) bufferStatus.textContent = hybridReady
+    ? '● Audio hybride actif'
+    : '● Flux audio natif';
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
 });
 
@@ -512,11 +611,20 @@ async function togglePlay(station) {
 
   try {
     setStatus('⏳ Connexion…');
+
+    // Initialisé pendant le geste utilisateur : nécessaire sur iOS.
+    const hybridOK = await initHybridAudio();
+    if (hybridOK && audioCtx && audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
+
     nativeAudio.src = station.u;
     nativeAudio.load();
     updateVolume();
     updateBalance();
+    updateEQ();
     updateMediaSession(station);
+
     await nativeAudio.play();
     await activerWakeLock();
   } catch (err) {
@@ -528,10 +636,10 @@ async function togglePlay(station) {
   }
 }
 
-// Quand l'écran revient au premier plan, on met simplement à jour l'état.
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && isPlaying && wakeLock === null) {
-    await activerWakeLock();
+  if (document.visibilityState === 'visible') {
+    if (isPlaying && wakeLock === null) await activerWakeLock();
+    // Ne force pas resume() ici : iOS décide du comportement arrière-plan.
   }
 });
 
