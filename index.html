@@ -329,6 +329,8 @@ let bassFilter = null;
 let midFilter = null;
 let highFilter = null;
 let lowpassFilter = null;
+let highpassFilter = null;
+let bandpassFilter = null;
 let delayNode = null;
 let feedbackGain = null;
 let convolverNode = null;
@@ -397,8 +399,10 @@ function scheduleBuffer(audioBuffer) {
     bassFilter.connect(midFilter);
     midFilter.connect(highFilter);
     highFilter.connect(lowpassFilter);
-    lowpassFilter.connect(dryGain);
-    lowpassFilter.connect(delayNode);
+    lowpassFilter.connect(highpassFilter);
+    highpassFilter.connect(bandpassFilter);
+    bandpassFilter.connect(dryGain);
+    bandpassFilter.connect(delayNode);
     delayNode.connect(feedbackGain);
     feedbackGain.connect(delayNode); // boucle de feedback
     delayNode.connect(convolverNode);
@@ -475,6 +479,15 @@ function createAudioContext() {
   lowpassFilter = audioCtx.createBiquadFilter();
   lowpassFilter.type = 'lowpass';
   lowpassFilter.frequency.value = 20000;
+  lowpassFilter.Q.value = 0.71;
+  highpassFilter = audioCtx.createBiquadFilter();
+  highpassFilter.type = 'highpass';
+  highpassFilter.frequency.value = 20;
+  highpassFilter.Q.value = 0.71;
+  bandpassFilter = audioCtx.createBiquadFilter();
+  bandpassFilter.type = 'bandpass';
+  bandpassFilter.frequency.value = 1000;
+  bandpassFilter.Q.value = 0.05; // très large par défaut = quasi transparent
   delayNode = audioCtx.createDelay(2.0);
   delayNode.delayTime.value = 0.35;
   feedbackGain = audioCtx.createGain();
@@ -535,6 +548,39 @@ function createAudioContext() {
   highSplit.connect(highAnalyser);
   return audioCtx;
 }
+async function closeAudioContext() {
+  if (abortController) {
+    try { abortController.abort(); } catch (e) {}
+  }
+  if (audioCtx && audioCtx.state !== 'closed') {
+    try { await audioCtx.close(); } catch (e) {}
+  }
+  audioCtx = null;
+  pannerNode = null;
+  gainNode = null;
+  bassFilter = null;
+  midFilter = null;
+  highFilter = null;
+  analyserNode = null;
+  bassAnalyser = null;
+  midAnalyser = null;
+  highAnalyser = null;
+  lowpassFilter = null;
+  highpassFilter = null;
+  bandpassFilter = null;
+  delayNode = null;
+  feedbackGain = null;
+  convolverNode = null;
+  dryGain = null;
+  wetGain = null;
+  limiterNode = null;
+  cfSplitter = null;
+  cfMerger = null;
+  cfGainLL = null;
+  cfGainLR = null;
+  cfGainRL = null;
+  cfGainRR = null;
+}
 async function startStream(url, station) {
   const ctx = createAudioContext();
   const handleVisibilityChange = async () => {
@@ -551,6 +597,8 @@ async function startStream(url, station) {
   updateCrossfeed();
   updateEQ();
   updateLowpass();
+  updateHighpass();
+  updateBandpass();
   updateFeedback();
   updateDryWet();
   updateLimiter();
@@ -646,6 +694,7 @@ async function startStream(url, station) {
   // appuyé sur Stop entre-temps, auquel cas isPlaying serait déjà à false).
   if (stalled && isPlaying) {
     setStatus('🔄 Flux perdu, reconnexion...');
+    await closeAudioContext(); // évite d'accumuler des contextes audio non fermés
     await new Promise(resolve => setTimeout(resolve, 500));
     if (isPlaying) {
       return startStream(url, station);
@@ -690,11 +739,42 @@ function updateEQ() {
 }
 function updateLowpass() {
   const s = document.getElementById('lowpass');
+  const qs = document.getElementById('lowpassQ');
   if (!s) return;
   const v = parseFloat(s.value);
+  const q = qs ? parseFloat(qs.value) : 0.71;
   const val = document.getElementById('lowpassVal');
   if (val) val.textContent = v + ' Hz' + (v >= 20000 ? ' (off)' : '');
-  if (lowpassFilter) lowpassFilter.frequency.value = v;
+  if (lowpassFilter) {
+    lowpassFilter.frequency.value = v;
+    lowpassFilter.Q.value = q;
+  }
+}
+function updateHighpass() {
+  const s = document.getElementById('highpass');
+  const qs = document.getElementById('highpassQ');
+  if (!s) return;
+  const v = parseFloat(s.value);
+  const q = qs ? parseFloat(qs.value) : 0.71;
+  const val = document.getElementById('highpassVal');
+  if (val) val.textContent = v + ' Hz' + (v <= 20 ? ' (off)' : '');
+  if (highpassFilter) {
+    highpassFilter.frequency.value = v;
+    highpassFilter.Q.value = q;
+  }
+}
+function updateBandpass() {
+  const fs = document.getElementById('bandpassFreq');
+  const qs = document.getElementById('bandpassQ');
+  if (!fs || !qs) return;
+  const f = parseFloat(fs.value);
+  const q = parseFloat(qs.value);
+  const val = document.getElementById('bandpassVal');
+  if (val) val.textContent = f + ' Hz' + (q <= 0.05 ? ' (off)' : ' · Q ' + q.toFixed(1));
+  if (bandpassFilter) {
+    bandpassFilter.frequency.value = f;
+    bandpassFilter.Q.value = q;
+  }
 }
 function updateFeedback() {
   const s = document.getElementById('feedback');
@@ -833,36 +913,8 @@ function setStatus(msg) {
 }
 async function studioTogglePlay(station) {
   if (isPlaying) {
-    if (abortController) {
-      try { abortController.abort(); } catch(e) {}
-    }
-    if (audioCtx && audioCtx.state !== 'closed') {
-      try { await audioCtx.close(); } catch(e) {}
-    }
+    await closeAudioContext();
     isPlaying = false;
-    audioCtx = null;
-    pannerNode = null;
-    gainNode = null;
-    bassFilter = null;
-    midFilter = null;
-    highFilter = null;
-    analyserNode = null;
-    bassAnalyser = null;
-    midAnalyser = null;
-    highAnalyser = null;
-    lowpassFilter = null;
-    delayNode = null;
-    feedbackGain = null;
-    convolverNode = null;
-    dryGain = null;
-    wetGain = null;
-    limiterNode = null;
-    cfSplitter = null;
-    cfMerger = null;
-    cfGainLL = null;
-    cfGainLR = null;
-    cfGainRL = null;
-    cfGainRR = null;
     const power = document.getElementById('power');
     const power2 = document.getElementById('power2');
     if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
@@ -1438,10 +1490,27 @@ var panel=document.getElementById('console');
       +'<input type="range" id="'+id+'" data-eq="'+k+'" min="-24" max="24" step="0.5" value="0"></div>';
   });
   h+='</div></div>'
-   +'<div class="mod"><h3>EFFETS</h3>'
+   +'<div class="mod"><h3>FILTRES</h3>'
    +'<div class="fader" style="--c:#FFC24B"><div class="fhead"><span class="lbl">Passe-bas</span>'
    +'<span class="val" id="lowpassVal">20000 Hz (off)</span></div>'
    +'<input type="range" id="lowpass" min="200" max="20000" step="100" value="20000"></div>'
+   +'<div class="fader" style="--c:#FFC24B;margin-top:2px"><div class="fhead"><span class="lbl">Résonance passe-bas (Q)</span>'
+   +'<span class="val"></span></div>'
+   +'<input type="range" id="lowpassQ" min="0.1" max="20" step="0.1" value="0.71"></div>'
+   +'<div class="fader" style="--c:#FF3D9E"><div class="fhead"><span class="lbl">Passe-haut</span>'
+   +'<span class="val" id="highpassVal">20 Hz (off)</span></div>'
+   +'<input type="range" id="highpass" min="20" max="2000" step="10" value="20"></div>'
+   +'<div class="fader" style="--c:#FF3D9E;margin-top:2px"><div class="fhead"><span class="lbl">Résonance passe-haut (Q)</span>'
+   +'<span class="val"></span></div>'
+   +'<input type="range" id="highpassQ" min="0.1" max="20" step="0.1" value="0.71"></div>'
+   +'<div class="fader" style="--c:#2FE7FF"><div class="fhead"><span class="lbl">Passe-bande</span>'
+   +'<span class="val" id="bandpassVal">1000 Hz (off)</span></div>'
+   +'<input type="range" id="bandpassFreq" min="100" max="8000" step="50" value="1000"></div>'
+   +'<div class="fader" style="--c:#2FE7FF;margin-top:2px"><div class="fhead"><span class="lbl">Largeur passe-bande (Q)</span>'
+   +'<span class="val"></span></div>'
+   +'<input type="range" id="bandpassQ" min="0.05" max="10" step="0.05" value="0.05"></div>'
+   +'</div>'
+   +'<div class="mod"><h3>EFFETS</h3>'
    +'<div class="fader" style="--c:#FF3D9E"><div class="fhead"><span class="lbl">Feedback</span>'
    +'<span class="val" id="feedbackVal">0%</span></div>'
    +'<input type="range" id="feedback" min="0" max="0.9" step="0.01" value="0"></div>'
@@ -1482,6 +1551,16 @@ var panel=document.getElementById('console');
   });
   var lowpassSlider = document.getElementById('lowpass');
   if (lowpassSlider) lowpassSlider.addEventListener('input', function() { updateLowpass(); });
+  var lowpassQSlider = document.getElementById('lowpassQ');
+  if (lowpassQSlider) lowpassQSlider.addEventListener('input', function() { updateLowpass(); });
+  var highpassSlider = document.getElementById('highpass');
+  if (highpassSlider) highpassSlider.addEventListener('input', function() { updateHighpass(); });
+  var highpassQSlider = document.getElementById('highpassQ');
+  if (highpassQSlider) highpassQSlider.addEventListener('input', function() { updateHighpass(); });
+  var bandpassFreqSlider = document.getElementById('bandpassFreq');
+  if (bandpassFreqSlider) bandpassFreqSlider.addEventListener('input', function() { updateBandpass(); });
+  var bandpassQSlider = document.getElementById('bandpassQ');
+  if (bandpassQSlider) bandpassQSlider.addEventListener('input', function() { updateBandpass(); });
   var feedbackSlider = document.getElementById('feedback');
   if (feedbackSlider) feedbackSlider.addEventListener('input', function() { updateFeedback(); });
   var reverbSlider = document.getElementById('reverb');
@@ -1505,7 +1584,9 @@ var panel=document.getElementById('console');
       var defaults = {
         volume: 0, balance: 0, crossfeed: 0,
         eqBass: 0, eqMid: 0, eqHigh: 0,
-        lowpass: 20000, feedback: 0, reverb: 0, drywet: 0, limiter: -6
+        lowpass: 20000, lowpassQ: 0.71, highpass: 20, highpassQ: 0.71,
+        bandpassFreq: 1000, bandpassQ: 0.05,
+        feedback: 0, reverb: 0, drywet: 0, limiter: -6
       };
       Object.keys(defaults).forEach(function(id) {
         var slider = document.getElementById(id);
@@ -1551,6 +1632,8 @@ window.updateVolume = updateVolume;
 window.updateBalance = updateBalance;
 window.updateEQ = updateEQ;
 window.updateLowpass = updateLowpass;
+window.updateHighpass = updateHighpass;
+window.updateBandpass = updateBandpass;
 window.updateFeedback = updateFeedback;
 window.updateDryWet = updateDryWet;
 window.updateLimiter = updateLimiter;
