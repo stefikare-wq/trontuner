@@ -569,6 +569,18 @@ async function startStream(url, station) {
   let processedCount = 0;
   setStatus('📥 Téléchargement...');
   let processingActive = false;
+
+  // Chien de garde : si aucune donnée reçue depuis 1s, on considère le flux
+  // perdu et on force une reconnexion automatique (évite un rafraîchissement manuel).
+  let lastDataTime = Date.now();
+  let stalled = false;
+  const watchdogInterval = setInterval(() => {
+    if (Date.now() - lastDataTime > 1000) {
+      stalled = true;
+      try { abortController.abort(); } catch (e) {}
+    }
+  }, 250);
+
   const processQueue = async () => {
     if (processingActive || !audioCtx) return;
     processingActive = true;
@@ -592,6 +604,7 @@ async function startStream(url, station) {
     }
     const { done, value } = result;
     if (done) break;
+    lastDataTime = Date.now();
     accumulated = concatUint8(accumulated, value);
     bytesReceived += value.length;
     while (accumulated.length >= CHUNK_SIZE) {
@@ -622,10 +635,21 @@ async function startStream(url, station) {
       setStatus('📦 ' + (bytesReceived / 1024 / 1024).toFixed(1) + 'MB reçus');
     }
   }
+  clearInterval(watchdogInterval);
   clearInterval(processInterval);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   while (pendingChunks.length > 0 || isProcessing) {
     await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  // Reconnexion auto si le flux a été perdu (et que l'utilisateur n'a pas
+  // appuyé sur Stop entre-temps, auquel cas isPlaying serait déjà à false).
+  if (stalled && isPlaying) {
+    setStatus('🔄 Flux perdu, reconnexion...');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    if (isPlaying) {
+      return startStream(url, station);
+    }
   }
 }
 function updateVolume() {
@@ -1534,4 +1558,3 @@ window.updateLimiter = updateLimiter;
 </script>
 </body></html>
 <!-- TUNER_PRODUCTION_BUILD_2026 -->
-
