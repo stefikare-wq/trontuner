@@ -618,12 +618,13 @@ async function startStream(url, station) {
   setStatus('📥 Téléchargement...');
   let processingActive = false;
 
-  // Chien de garde : si aucune donnée reçue depuis 1s, on considère le flux
-  // perdu et on force une reconnexion automatique (évite un rafraîchissement manuel).
+  // Chien de garde : si aucune donnée reçue depuis 4s (le buffer audio tient
+  // jusqu'à 6s, donc ça laisse de la marge avant que ça devienne audible),
+  // on considère le flux perdu et on force une reconnexion automatique.
   let lastDataTime = Date.now();
   let stalled = false;
   const watchdogInterval = setInterval(() => {
-    if (Date.now() - lastDataTime > 1000) {
+    if (Date.now() - lastDataTime > 4000) {
       stalled = true;
       try { abortController.abort(); } catch (e) {}
     }
