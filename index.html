@@ -102,6 +102,10 @@
   .grip:hover i,.grip.drag i{width:130px;background:var(--cyan);box-shadow:0 0 20px var(--cyan)}
   .console{padding:18px}
   .ctitle-actions{display:flex;gap:8px;align-items:center}.swapbtn{min-width:46px;height:38px;border-radius:12px;font-size:22px;line-height:1}.swapbtn.on{box-shadow:0 0 18px rgba(255,61,158,.5)}
+  .resetbtn{min-height:38px;padding:0 16px;border-radius:12px;font-size:13px;font-weight:600;
+            color:var(--muted);border:1px solid var(--edge2);transition:all .2s var(--e)}
+  .resetbtn:active{transform:scale(.96);color:var(--ice);border-color:var(--cyan);
+                   box-shadow:0 0 16px rgba(47,231,255,.3)}
   .ctitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;gap:12px}
   .ctitle h2{font-size:11.5px;letter-spacing:.2em;margin:0;color:var(--cyan);
              text-shadow:0 0 16px rgba(47,231,255,.5)}
@@ -251,6 +255,9 @@
              transition:all .22s var(--e);cursor:pointer}
   .row .star:hover{color:var(--magenta);transform:scale(1.15)}
   .row .star.is{color:var(--magenta);text-shadow:0 0 10px var(--magenta),0 0 22px rgba(255,61,158,.7)}
+  .row .del{font-size:17px;color:rgba(234,241,255,.2);padding:8px 6px;border-radius:10px;
+            transition:all .22s var(--e);cursor:pointer}
+  .row .del:hover{color:#FF3D9E;transform:scale(1.15);background:rgba(255,61,158,.12)}
   .addrow{display:flex;gap:8px;margin-top:14px}
   .addrow .txtin{flex:1;min-width:0;border-radius:100px;min-height:50px;padding:0 18px}
   .pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:12px}
@@ -315,6 +322,9 @@ let firstChunkScheduled = false;
 let pendingChunks = [];
 let isProcessing = false;
 let currentStation = null;
+// Proxy pour les vieux flux Shoutcast (ICY) qui échouent en connexion directe
+const SHOUTCAST_PROXY = 'https://soft-brook-0e52.stefikare.workers.dev/?url=';
+
 let bassFilter = null;
 let midFilter = null;
 let highFilter = null;
@@ -852,7 +862,29 @@ async function studioTogglePlay(station) {
   try {
     await startStream(station.u, station);
   } catch (err) {
-    if (err.name !== 'AbortError') {
+    const isAbort = err.name === 'AbortError';
+    const alreadyProxied = station.u.indexOf(SHOUTCAST_PROXY) === 0;
+    if (!isAbort && !alreadyProxied) {
+      // Connexion directe échouée (souvent un vieux flux Shoutcast/ICY) :
+      // on retente automatiquement via le proxy avant d'abandonner.
+      try {
+        setStatus('🔄 Connexion directe impossible, nouvelle tentative via proxy...');
+        const proxiedUrl = SHOUTCAST_PROXY + encodeURIComponent(station.u);
+        await startStream(proxiedUrl, station);
+        return; // succès via le proxy, on s'arrête là
+      } catch (err2) {
+        if (err2.name !== 'AbortError') {
+          setStatus('❌ ' + err2.message);
+          console.error(err2);
+        }
+        isPlaying = false;
+        if (power) { power.textContent = '▶️ Lecture'; power.classList.remove('stop'); }
+        if (power2) power2.textContent = '▶';
+        bufferFill.style.width = '0%';
+        return;
+      }
+    }
+    if (!isAbort) {
       setStatus('❌ ' + err.message);
       console.error(err);
     }
@@ -933,7 +965,7 @@ var CORE=[
   soma('bootliquor','Boot Liquor','rock','Americana, roots',320)
 ];
 var TABS=[
-  {id:'all',label:'Tout'},{id:'fav',label:'Favoris'},
+  {id:'all',label:'Tout'},{id:'fav',label:'Favoris'},{id:'added',label:'Ajoutées'},
   {id:'jazz',label:'Jazz & soul'},{id:'dnb',label:'Drum & bass'},
   {id:'techno',label:'Techno & minimal'},{id:'house',label:'House & deep'},
   {id:'trance',label:'Trance & progressive'},{id:'dub',label:'Dub & monde'},
@@ -1034,6 +1066,7 @@ function rows(){
     });
   }
   var list = tab==='fav' ? favs.slice()
+           : tab==='added' ? CORE.filter(function(s){ return s.custom; })
            : CORE.filter(function(s){ return tab==='all'||s.c===tab; });
   return list.sort(function(a,b){ return (plays[b.u]||0)-(plays[a.u]||0); });
 }
@@ -1047,6 +1080,8 @@ function paint(){
   drawPager(pages,all.length);
   if(!list.length&&tab==='fav'){ listMsg.className='msg';
     listMsg.textContent='Aucun favori. Lance une station puis appuie sur l\'étoile.'; }
+  if(!list.length&&tab==='added'){ listMsg.className='msg';
+    listMsg.textContent='Aucune radio ajoutée pour l\'instant. Colle un lien de flux ci-dessous.'; }
   list.forEach(function(st){
     var r=document.createElement('button'); r.className='row';
     if(currentStation&&currentStation.u===st.u) r.className+=' play';
@@ -1061,6 +1096,7 @@ function paint(){
                +'<span class="line1"><span class="nm"></span>'
                +'<span class="sig '+cls+'">'+sig+'</span></span>'
                +'<span class="desc"></span></span>'
+               +(st.custom?'<span class="del" title="Supprimer cette radio">✕</span>':'')
                +'<span class="star'+(isFav?' is':'')+'">★</span>';
     r.querySelector('.nm').textContent=st.n;
     r.querySelector('.desc').textContent=
@@ -1073,9 +1109,30 @@ function paint(){
     r.querySelector('.star').addEventListener('click',function(ev){
       ev.stopPropagation(); ev.preventDefault(); toggleFav(st);
     });
+    var delBtn=r.querySelector('.del');
+    if(delBtn){
+      delBtn.addEventListener('click',function(ev){
+        ev.stopPropagation(); ev.preventDefault();
+        deleteCustomStation(st);
+      });
+    }
     listEl.appendChild(r);
   });
   renderTop5();
+}
+function deleteCustomStation(st){
+  if(currentStation && currentStation.u===st.u && isPlaying){
+    togglePlay();
+  }
+  var idx=CORE.findIndex(function(x){ return x.u===st.u; });
+  if(idx>=0) CORE.splice(idx,1);
+  customStations=customStations.filter(function(x){ return x.u!==st.u; });
+  try{ localStorage.setItem('tuner_custom_stations',JSON.stringify(customStations)); }catch(e){}
+  favs=favs.filter(function(x){ return x.u!==st.u; });
+  saveFavs();
+  delete plays[st.u];
+  savePlays();
+  paint();
 }
 function drawPager(pages,total){
   var p=document.getElementById('pager');
@@ -1336,7 +1393,8 @@ document.getElementById('openFile').addEventListener('click',function(){ picker.
 var panel=document.getElementById('console');
 (function buildConsole(){
   var h='<div class="ctitle"><h2>CONSOLE</h2>'
-       +'<div class="ctitle-actions"><button data-swap class="swapbtn" title="Échanger gauche et droite">⇄</button></div></div>'
+       +'<div class="ctitle-actions"><button data-reset class="resetbtn" title="Réinitialiser tous les réglages">↺ Reset</button>'
+       +'<button data-swap class="swapbtn" title="Échanger gauche et droite">⇄</button></div></div>'
        +'<div class="gainbox">'
        +'<div class="fader" style="--c:#2FE7FF"><div class="gainhead"><span class="lbl">Volume</span><span class="val" data-val="gain"></span></div>'
        +'<input type="range" id="volume" class="big" min="-24" max="12" step="0.5" value="0"></div>'
@@ -1416,6 +1474,27 @@ var panel=document.getElementById('console');
       updateBalance();
     });
   }
+
+  var resetBtn = panel.querySelector('[data-reset]');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', function() {
+      var defaults = {
+        volume: 0, balance: 0, crossfeed: 0,
+        eqBass: 0, eqMid: 0, eqHigh: 0,
+        lowpass: 20000, feedback: 0, reverb: 0, drywet: 0, limiter: -6
+      };
+      Object.keys(defaults).forEach(function(id) {
+        var slider = document.getElementById(id);
+        if (!slider) return;
+        slider.value = defaults[id];
+        slider.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      channelsSwapped = false;
+      if (swapBtn) swapBtn.classList.remove('on');
+      updateBalance();
+      setStatus('↺ Réglages réinitialisés.');
+    });
+  }
   function updateSliderFill(slider) {
     const min = parseFloat(slider.min);
     const max = parseFloat(slider.max);
@@ -1455,3 +1534,4 @@ window.updateLimiter = updateLimiter;
 </script>
 </body></html>
 <!-- TUNER_PRODUCTION_BUILD_2026 -->
+
