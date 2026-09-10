@@ -258,6 +258,14 @@
   .row .del{font-size:17px;color:rgba(234,241,255,.2);padding:8px 6px;border-radius:10px;
             transition:all .22s var(--e);cursor:pointer}
   .row .del:hover{color:#FF3D9E;transform:scale(1.15);background:rgba(255,61,158,.12)}
+  .veq{display:flex;gap:6px;justify-content:space-between;padding:8px 2px 4px}
+  .veq-band{display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;min-width:0}
+  .veq-band .vlbl{font-size:10px;color:var(--muted);white-space:nowrap}
+  .veq-band .vval{font-size:10px;font-weight:600;color:var(--c,var(--cyan));min-height:14px}
+  .veq-band input[type=range]{-webkit-appearance:slider-vertical;appearance:slider-vertical;
+    width:8px;height:150px;accent-color:var(--c,var(--cyan))}
+  .veq-band.active .vlbl,.veq-band.active .vval{
+    color:var(--c,var(--cyan));text-shadow:0 0 10px var(--c,var(--cyan))}
   .addrow{display:flex;gap:8px;margin-top:14px}
   .addrow .txtin{flex:1;min-width:0;border-radius:100px;min-height:50px;padding:0 18px}
   .pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:12px}
@@ -325,9 +333,10 @@ let currentStation = null;
 // Proxy pour les vieux flux Shoutcast (ICY) qui échouent en connexion directe
 const SHOUTCAST_PROXY = 'https://soft-brook-0e52.stefikare.workers.dev/?url=';
 
-let bassFilter = null;
-let midFilter = null;
-let highFilter = null;
+let eqSplitter = null;
+let eqMerger = null;
+let leftEQFilters = [];
+let rightEQFilters = [];
 let lowpassFilter = null;
 let highpassFilter = null;
 let bandpassFilter = null;
@@ -395,10 +404,12 @@ function scheduleBuffer(audioBuffer) {
     fadeGain.connect(cfSplitter);
     cfMerger.connect(pannerNode);
     pannerNode.connect(gainNode);
-    gainNode.connect(bassFilter);
-    bassFilter.connect(midFilter);
-    midFilter.connect(highFilter);
-    highFilter.connect(lowpassFilter);
+    gainNode.connect(eqSplitter);
+    eqSplitter.connect(leftEQFilters[0], 0);
+    eqSplitter.connect(rightEQFilters[0], 1);
+    leftEQFilters[leftEQFilters.length - 1].connect(eqMerger, 0, 0);
+    rightEQFilters[rightEQFilters.length - 1].connect(eqMerger, 0, 1);
+    eqMerger.connect(lowpassFilter);
     lowpassFilter.connect(highpassFilter);
     highpassFilter.connect(bandpassFilter);
     bandpassFilter.connect(dryGain);
@@ -463,19 +474,28 @@ function createAudioContext() {
   pannerNode.pan.value = 0;
   gainNode = audioCtx.createGain();
   gainNode.gain.value = 1;
-  bassFilter = audioCtx.createBiquadFilter();
-  bassFilter.type = 'lowshelf';
-  bassFilter.frequency.value = 200;
-  bassFilter.gain.value = 0;
-  midFilter = audioCtx.createBiquadFilter();
-  midFilter.type = 'peaking';
-  midFilter.frequency.value = 1000;
-  midFilter.Q.value = 0.7;
-  midFilter.gain.value = 0;
-  highFilter = audioCtx.createBiquadFilter();
-  highFilter.type = 'highshelf';
-  highFilter.frequency.value = 4000;
-  highFilter.gain.value = 0;
+  eqSplitter = audioCtx.createChannelSplitter(2);
+  eqMerger = audioCtx.createChannelMerger(2);
+  leftEQFilters = [];
+  rightEQFilters = [];
+  const eqFreqs = [60, 250, 1000, 4000, 12000];
+  eqFreqs.forEach(function(freq) {
+    const l = audioCtx.createBiquadFilter();
+    l.type = 'peaking';
+    l.frequency.value = freq;
+    l.Q.value = 1;
+    l.gain.value = 0;
+    leftEQFilters.push(l);
+
+    const r = audioCtx.createBiquadFilter();
+    r.type = 'peaking';
+    r.frequency.value = freq;
+    r.Q.value = 1;
+    r.gain.value = 0;
+    rightEQFilters.push(r);
+  });
+  for (let i = 0; i < leftEQFilters.length - 1; i++) leftEQFilters[i].connect(leftEQFilters[i + 1]);
+  for (let i = 0; i < rightEQFilters.length - 1; i++) rightEQFilters[i].connect(rightEQFilters[i + 1]);
   lowpassFilter = audioCtx.createBiquadFilter();
   lowpassFilter.type = 'lowpass';
   lowpassFilter.frequency.value = 20000;
@@ -540,11 +560,11 @@ function createAudioContext() {
   const highSplit = audioCtx.createBiquadFilter();
   highSplit.type = 'highpass';
   highSplit.frequency.value = 4000;
-  highFilter.connect(bassSplit);
+  eqMerger.connect(bassSplit);
   bassSplit.connect(bassAnalyser);
-  highFilter.connect(midSplit);
+  eqMerger.connect(midSplit);
   midSplit.connect(midAnalyser);
-  highFilter.connect(highSplit);
+  eqMerger.connect(highSplit);
   highSplit.connect(highAnalyser);
   return audioCtx;
 }
@@ -558,9 +578,10 @@ async function closeAudioContext() {
   audioCtx = null;
   pannerNode = null;
   gainNode = null;
-  bassFilter = null;
-  midFilter = null;
-  highFilter = null;
+  eqSplitter = null;
+  eqMerger = null;
+  leftEQFilters = [];
+  rightEQFilters = [];
   analyserNode = null;
   bassAnalyser = null;
   midAnalyser = null;
@@ -731,12 +752,22 @@ function updateBalance() {
   if (pannerNode) pannerNode.pan.value = v;
 }
 function updateEQ() {
-  const eqBass = document.getElementById('eqBass');
-  const eqMid = document.getElementById('eqMid');
-  const eqHigh = document.getElementById('eqHigh');
-  if (bassFilter && eqBass) bassFilter.gain.value = parseFloat(eqBass.value);
-  if (midFilter && eqMid) midFilter.gain.value = parseFloat(eqMid.value);
-  if (highFilter && eqHigh) highFilter.gain.value = parseFloat(eqHigh.value);
+  for (let i = 0; i < 5; i++) {
+    const ls = document.getElementById('eqL' + i);
+    const rs = document.getElementById('eqR' + i);
+    if (ls) {
+      const lv = parseFloat(ls.value);
+      if (leftEQFilters[i]) leftEQFilters[i].gain.value = lv;
+      const lval = document.getElementById('eqL' + i + 'Val');
+      if (lval) lval.textContent = (lv > 0 ? '+' : '') + lv.toFixed(1);
+    }
+    if (rs) {
+      const rv = parseFloat(rs.value);
+      if (rightEQFilters[i]) rightEQFilters[i].gain.value = rv;
+      const rval = document.getElementById('eqR' + i + 'Val');
+      if (rval) rval.textContent = (rv > 0 ? '+' : '') + rv.toFixed(1);
+    }
+  }
 }
 function updateLowpass() {
   const s = document.getElementById('lowpass');
@@ -1482,13 +1513,19 @@ var panel=document.getElementById('console');
        +'<span class="val" id="crossfeedVal">0%</span></div>'
        +'<input type="range" id="crossfeed" class="big" min="0" max="1" step="0.01" value="0"></div>'
        +'</div>'
-       +'<div class="mods"><div class="mod"><h3>ÉGALISEUR 3 BANDES</h3>';
-  ['Bass','Medium','High'].forEach(function(lbl,k){
-    var id = ['eqBass','eqMid','eqHigh'][k];
-    var col = ['#FF3D9E','#2FE7FF','#B9FF45'][k];
-    h+='<div class="fader" style="--c:'+col+'"><div class="fhead"><span class="lbl">'+lbl+'</span>'
-      +'<span class="val" data-val="eq'+k+'"></span></div>'
-      +'<input type="range" id="'+id+'" data-eq="'+k+'" min="-24" max="24" step="0.5" value="0"></div>';
+       +'<div class="mods"><div class="mod"><h3>ÉGALISEUR GAUCHE (5 BANDES)</h3><div class="veq">';
+  var eqLabels = ['60','250','1k','4k','12k'];
+  eqLabels.forEach(function(lbl,i){
+    h+='<div class="veq-band" style="--c:#FF3D9E"><span class="vval" id="eqL'+i+'Val">0</span>'
+      +'<input type="range" id="eqL'+i+'" data-eqv="1" min="-24" max="24" step="0.5" value="0">'
+      +'<span class="vlbl">'+lbl+'</span></div>';
+  });
+  h+='</div></div>'
+   +'<div class="mod"><h3>ÉGALISEUR DROITE (5 BANDES)</h3><div class="veq">';
+  eqLabels.forEach(function(lbl,i){
+    h+='<div class="veq-band" style="--c:#2FE7FF"><span class="vval" id="eqR'+i+'Val">0</span>'
+      +'<input type="range" id="eqR'+i+'" data-eqv="1" min="-24" max="24" step="0.5" value="0">'
+      +'<span class="vlbl">'+lbl+'</span></div>';
   });
   h+='</div></div>'
    +'<div class="mod"><h3>FILTRES</h3>'
@@ -1534,22 +1571,11 @@ var panel=document.getElementById('console');
   updateBalance();
   var cfSlider = document.getElementById('crossfeed');
   if (cfSlider) cfSlider.addEventListener('input', function() { updateCrossfeed(); });
-  var eqSliders = panel.querySelectorAll('[data-eq]');
+  var eqSliders = panel.querySelectorAll('[data-eqv]');
   eqSliders.forEach(function(slider) {
-    slider.addEventListener('input', function() {
-      var idx = parseInt(this.dataset.eq);
-      var val = parseFloat(this.value);
-      var display = panel.querySelector('[data-val="eq' + idx + '"]');
-      if (display) display.textContent = (val > 0 ? '+' : '') + val.toFixed(1) + ' dB';
-      updateEQ();
-    });
+    slider.addEventListener('input', function() { updateEQ(); });
   });
-  eqSliders.forEach(function(slider) {
-    var idx = parseInt(slider.dataset.eq);
-    var val = parseFloat(slider.value);
-    var display = panel.querySelector('[data-val="eq' + idx + '"]');
-    if (display) display.textContent = (val > 0 ? '+' : '') + val.toFixed(1) + ' dB';
-  });
+  updateEQ();
   var lowpassSlider = document.getElementById('lowpass');
   if (lowpassSlider) lowpassSlider.addEventListener('input', function() { updateLowpass(); });
   var lowpassQSlider = document.getElementById('lowpassQ');
@@ -1584,7 +1610,8 @@ var panel=document.getElementById('console');
     resetBtn.addEventListener('click', function() {
       var defaults = {
         volume: 0, balance: 0, crossfeed: 0,
-        eqBass: 0, eqMid: 0, eqHigh: 0,
+        eqL0: 0, eqL1: 0, eqL2: 0, eqL3: 0, eqL4: 0,
+        eqR0: 0, eqR1: 0, eqR2: 0, eqR3: 0, eqR4: 0,
         lowpass: 20000, lowpassQ: 0.71, highpass: 20, highpassQ: 0.71,
         bandpassFreq: 1000, bandpassQ: 0.05,
         feedback: 0, reverb: 0, drywet: 0, limiter: -6
@@ -1614,7 +1641,7 @@ var panel=document.getElementById('console');
     s.addEventListener('input', function() {
       updateSliderFill(this);
     });
-    var wrapper = s.closest('.fader');
+    var wrapper = s.closest('.fader, .veq-band');
     if (wrapper) {
       var activate = function() { wrapper.classList.add('active'); };
       var deactivate = function() { wrapper.classList.remove('active'); };
