@@ -1,4 +1,3 @@
-
 <!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="theme-color" content="#05060C"><title>Tuner</title><style>
   :root{
     --void:#05060C; --deep:#080B14; --panel:#0C1020; --mod:#0A0E1A;
@@ -258,14 +257,291 @@
   .row .del{font-size:17px;color:rgba(234,241,255,.2);padding:8px 6px;border-radius:10px;
             transition:all .22s var(--e);cursor:pointer}
   .row .del:hover{color:#FF3D9E;transform:scale(1.15);background:rgba(255,61,158,.12)}
-  .veq{display:flex;gap:6px;justify-content:space-between;padding:8px 2px 4px}
-  .veq-band{display:flex;flex-direction:column;align-items:center;gap:8px;flex:1;min-width:0}
-  .veq-band .vlbl{font-size:10px;color:var(--muted);white-space:nowrap}
-  .veq-band .vval{font-size:10px;font-weight:600;color:var(--c,var(--cyan));min-height:14px}
-  .veq-band input[type=range]{-webkit-appearance:slider-vertical;appearance:slider-vertical;
-    width:8px;height:150px;accent-color:var(--c,var(--cyan))}
+
+  /* ===== EQ STRIP : pleine largeur, 2 groupes G/D ===== */
+  .eq-strip{
+    display:flex;
+    gap:24px;
+    align-items:flex-end;
+    justify-content:space-between;
+    padding:14px 12px 10px;
+    margin-top:10px;
+    border-top:1px solid var(--edge2);
+    width:100%;
+  }
+  .veq-group{
+    display:flex;
+    flex:1 1 0;
+    min-width:0;
+    justify-content:space-evenly;
+    align-items:flex-end;
+    gap:6px;
+  }
+  .veq-band{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:8px;
+    min-width:0;
+  }
+  .veq-band .vlbl{font-size:10px;color:var(--muted);white-space:nowrap;letter-spacing:.04em;
+                   font-weight:600}
+  .veq-band .vval{font-size:11px;font-weight:700;color:var(--c,var(--cyan));min-height:15px;
+                   text-shadow:0 0 8px color-mix(in srgb,var(--c,var(--cyan)) 55%,transparent)}
   .veq-band.active .vlbl,.veq-band.active .vval{
     color:var(--c,var(--cyan));text-shadow:0 0 10px var(--c,var(--cyan))}
+
+  /* ===== Slider vertical : rotation d'un slider horizontal =====
+     - Le conteneur est élargi à 60px pour laisser déborder les graduations.
+     - Les graduations sont dessinées par ::before (56px de large, couleur de la bande).
+     - La marque 0 dB est dessinée par ::after (64px, plus épaisse et lumineuse).
+     - L'input reste au-dessus (z-index 2) pour capter les interactions. */
+  .veq-band .vslider-wrap{
+    position:relative;
+    width:60px;
+    height:190px;
+    flex:none;
+  }
+  /* Graduations : 56px de large (plus large que la boule de 40px), teintées --c */
+  .veq-band .vslider-wrap::before{
+    content:'';
+    position:absolute;
+    top:0; bottom:0;
+    left:50%;
+    transform:translateX(-50%);
+    width:56px;
+    border-radius:3px;
+    background:repeating-linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--c, var(--cyan)) 70%, transparent) 0,
+      color-mix(in srgb, var(--c, var(--cyan)) 70%, transparent) 1.5px,
+      transparent 1.5px,
+      transparent 10%           /* → 10 graduations régulières */
+    );
+    opacity:.5;
+    pointer-events:none;
+    z-index:0;
+  }
+  /* Marque 0 dB : 64px de large, plus lumineuse, par-dessus les graduations */
+  .veq-band .vslider-wrap::after{
+    content:'';
+    position:absolute;
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    width:64px;
+    height:2px;
+    background:var(--c, var(--cyan));
+    box-shadow:0 0 12px var(--c, var(--cyan)),
+               0 0 4px var(--c, var(--cyan));
+    border-radius:2px;
+    pointer-events:none;
+    z-index:1;
+  }
+  .veq-band input[type=range].vslider{
+    position:absolute;
+    top:50%; left:50%;
+    width:190px;          /* longueur de la piste (devient hauteur visuelle) */
+    height:60px;          /* largeur tactile (devient largeur visuelle) */
+    transform:translate(-50%,-50%) rotate(-90deg);
+    transform-origin:center center;
+    margin:0;
+    padding:0;
+    -webkit-appearance:none;
+    appearance:none;
+    background:transparent;
+    cursor:pointer;
+    touch-action:none;
+    z-index:2;
+  }
+  /* Piste : ligne continue + remplissage coloré (les graduations sont derrière, sur ::before) */
+  .veq-band input[type=range].vslider::-webkit-slider-runnable-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      var(--c, var(--cyan)) var(--p, 50%),
+      rgba(234,241,255,.08) var(--p, 50%));
+  }
+  /* Bandes EQ : remplissage centré sur 0 dB, comme la Balance */
+  .veq-band input[type=range].vslider[data-center]::-webkit-slider-runnable-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      rgba(234,241,255,.08) 0%, rgba(234,241,255,.08) var(--fill-lo, 50%),
+      var(--c, var(--cyan)) var(--fill-lo, 50%), var(--c, var(--cyan)) var(--fill-hi, 50%),
+      rgba(234,241,255,.08) var(--fill-hi, 50%), rgba(234,241,255,.08) 100%);
+  }
+  .veq-band input[type=range].vslider::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    appearance:none;
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    margin-top:-17px;   /* (40 - 6) / 2 = 17 : centre la boule sur la piste 6px */
+    cursor:pointer;
+    border:2px solid var(--c, var(--cyan));
+    background:
+      linear-gradient(to bottom, transparent 44%, var(--c, var(--cyan)) 46%,
+        var(--c, var(--cyan)) 54%, transparent 56%),
+      radial-gradient(circle at 35% 30%, #9aa6c4 0%, #5a6684 55%, #3c4560 100%);
+    box-shadow:0 0 18px var(--c, var(--cyan)),
+               0 3px 10px rgba(0,0,0,.5);
+    transition:transform .16s var(--e);
+  }
+  .veq-band input[type=range].vslider:active::-webkit-slider-thumb{transform:scale(1.12)}
+  /* Firefox */
+  .veq-band input[type=range].vslider::-moz-range-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      var(--c, var(--cyan)) var(--p, 50%),
+      rgba(234,241,255,.08) var(--p, 50%));
+  }
+  .veq-band input[type=range].vslider[data-center]::-moz-range-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      rgba(234,241,255,.08) 0%, rgba(234,241,255,.08) var(--fill-lo, 50%),
+      var(--c, var(--cyan)) var(--fill-lo, 50%), var(--c, var(--cyan)) var(--fill-hi, 50%),
+      rgba(234,241,255,.08) var(--fill-hi, 50%), rgba(234,241,255,.08) 100%);
+  }
+  .veq-band input[type=range].vslider::-moz-range-thumb{
+    width:40px;
+    height:40px;
+    border-radius:50%;
+    cursor:pointer;
+    border:2px solid var(--c, var(--cyan));
+    background:
+      linear-gradient(to bottom, transparent 44%, var(--c, var(--cyan)) 46%,
+        var(--c, var(--cyan)) 54%, transparent 56%),
+      radial-gradient(circle at 35% 30%, #9aa6c4 0%, #5a6684 55%, #3c4560 100%);
+    box-shadow:0 0 18px var(--c, var(--cyan)),
+               0 3px 10px rgba(0,0,0,.5);
+  }
+  @media (max-width:640px){
+    .eq-strip{flex-direction:column;gap:18px;align-items:stretch}
+    .veq-group{width:100%}
+  }
+
+  /* ===== HSLIDER : même design que le vslider de l'EQ, mais horizontal
+     (pas besoin de rotation, un input range est déjà horizontal nativement).
+     ::before = graduations, ::after = marque de référence (position via --markpos),
+     boule ovale colorée avec fente lumineuse, comme le vslider. ===== */
+  .hslider-wrap{
+    position:relative;
+    width:100%;
+    height:46px;
+    display:flex;
+    align-items:center;
+  }
+  .hslider-wrap::before{
+    content:'';
+    position:absolute;
+    left:0; right:0; top:50%;
+    transform:translateY(-50%);
+    height:34px;
+    border-radius:3px;
+    background:repeating-linear-gradient(
+      to right,
+      color-mix(in srgb, var(--c, var(--cyan)) 70%, transparent) 0,
+      color-mix(in srgb, var(--c, var(--cyan)) 70%, transparent) 1.5px,
+      transparent 1.5px,
+      transparent 10%
+    );
+    opacity:.5;
+    pointer-events:none;
+    z-index:0;
+  }
+  .hslider-wrap::after{
+    content:'';
+    position:absolute;
+    left:var(--markpos, 50%); top:50%;
+    transform:translate(-50%,-50%);
+    width:2px;
+    height:40px;
+    background:var(--c, var(--cyan));
+    box-shadow:0 0 12px var(--c, var(--cyan)),
+               0 0 4px var(--c, var(--cyan));
+    border-radius:2px;
+    pointer-events:none;
+    z-index:1;
+  }
+  input[type=range].hslider{
+    position:relative;
+    width:100%;
+    height:46px;
+    -webkit-appearance:none;
+    appearance:none;
+    background:transparent;
+    margin:0;
+    padding:0;
+    cursor:pointer;
+    touch-action:none;
+    z-index:2;
+  }
+  input[type=range].hslider::-webkit-slider-runnable-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      var(--c, var(--cyan)) var(--p, 50%),
+      rgba(234,241,255,.08) var(--p, 50%));
+  }
+  /* Curseurs "centrés" (ex: Balance) : le remplissage part du centre (0)
+     vers la valeur actuelle, dans un sens ou dans l'autre, pas depuis le bord. */
+  input[type=range].hslider[data-center]::-webkit-slider-runnable-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      rgba(234,241,255,.08) 0%, rgba(234,241,255,.08) var(--fill-lo, 50%),
+      var(--c, var(--cyan)) var(--fill-lo, 50%), var(--c, var(--cyan)) var(--fill-hi, 50%),
+      rgba(234,241,255,.08) var(--fill-hi, 50%), rgba(234,241,255,.08) 100%);
+  }
+  input[type=range].hslider::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    appearance:none;
+    width:30px;
+    height:30px;
+    border-radius:50%;
+    margin-top:-12px;
+    cursor:pointer;
+    border:2px solid var(--c, var(--cyan));
+    background:
+      linear-gradient(to bottom, transparent 44%, var(--c, var(--cyan)) 46%,
+        var(--c, var(--cyan)) 54%, transparent 56%),
+      radial-gradient(circle at 35% 30%, #9aa6c4 0%, #5a6684 55%, #3c4560 100%);
+    box-shadow:0 0 14px var(--c, var(--cyan)),
+               0 3px 8px rgba(0,0,0,.5);
+    transition:transform .16s var(--e);
+  }
+  input[type=range].hslider:active::-webkit-slider-thumb{transform:scale(1.12)}
+  input[type=range].hslider::-moz-range-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      var(--c, var(--cyan)) var(--p, 50%),
+      rgba(234,241,255,.08) var(--p, 50%));
+  }
+  input[type=range].hslider[data-center]::-moz-range-track{
+    height:6px;
+    border-radius:3px;
+    background:linear-gradient(90deg,
+      rgba(234,241,255,.08) 0%, rgba(234,241,255,.08) var(--fill-lo, 50%),
+      var(--c, var(--cyan)) var(--fill-lo, 50%), var(--c, var(--cyan)) var(--fill-hi, 50%),
+      rgba(234,241,255,.08) var(--fill-hi, 50%), rgba(234,241,255,.08) 100%);
+  }
+  input[type=range].hslider::-moz-range-thumb{
+    width:30px;
+    height:30px;
+    border-radius:50%;
+    cursor:pointer;
+    border:2px solid var(--c, var(--cyan));
+    background:
+      linear-gradient(to bottom, transparent 44%, var(--c, var(--cyan)) 46%,
+        var(--c, var(--cyan)) 54%, transparent 56%),
+      radial-gradient(circle at 35% 30%, #9aa6c4 0%, #5a6684 55%, #3c4560 100%);
+    box-shadow:0 0 14px var(--c, var(--cyan)),
+               0 3px 8px rgba(0,0,0,.5);
+  }
+
   .addrow{display:flex;gap:8px;margin-top:14px}
   .addrow .txtin{flex:1;min-width:0;border-radius:100px;min-height:50px;padding:0 18px}
   .pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:12px}
@@ -305,7 +581,25 @@
     ::-webkit-scrollbar-track{background:transparent}
   }
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-</style></head><body><div class="app"><div class="card topbar"><div class="tb-txt"><div class="eyebrow" id="eyebrow">RADIO</div><div class="now" id="npName">Rien en lecture</div><div class="track" id="npTrack"></div><div class="sub" id="npState">Ouvre les stations pour choisir</div></div><div class="wave" id="wave"></div><div class="tb-btns"><button class="pill" id="power">Écouter</button><button class="pill ghost" id="engineSwitch">🌙 SCREEN OFF</button><button class="pill ghost" id="openFile">Ouvrir un morceau</button><button class="pill ghost" id="openDrawer">Stations</button></div></div><div class="card top5" id="top5Card" style="display:none"><div class="scope-head"><h2>TOP 5 FAVORIS</h2></div><div class="top5-list" id="top5List"></div></div><div class="card scope-card"><div class="scope-head"><h2>OSCILLOSCOPE - 3 BANDES</h2><div class="legend"><span><i style="background:#FF3D9E;box-shadow:0 0 10px #FF3D9E"></i>Bass</span><span><i style="background:#2FE7FF;box-shadow:0 0 10px #2FE7FF"></i>Medium</span><span><i style="background:#B9FF45;box-shadow:0 0 10px #B9FF45"></i>High</span></div></div><canvas id="scope"></canvas><div class="buffer-info"><span id="bufferStatus">Buffer: --</span><div class="buffer-bar"><div class="buffer-fill" id="bufferFill"></div></div></div></div><div class="grip" id="grip" title="Glisser pour partager l'espace"><i></i></div><div class="card console" id="console"></div></div><div class="scrim" id="scrim"></div><aside class="drawer" id="drawer"><div class="dhead"><h2>STATIONS</h2><button id="closeDrawer">✕</button></div><input type="text" class="txtin" id="search" placeholder="Chercher un genre ou une station"
+
+.console{background:linear-gradient(180deg,rgba(7,16,40,.96),rgba(4,9,25,.98))!important;border:1px solid rgba(47,231,255,.5)!important;box-shadow:0 0 30px rgba(47,231,255,.12),inset 0 1px 0 rgba(255,255,255,.05)!important}
+.ctitle{display:flex!important;align-items:center!important;justify-content:space-between!important;gap:12px!important;padding:14px 18px!important;border-bottom:1px solid rgba(47,231,255,.22)!important;background:linear-gradient(90deg,rgba(47,231,255,.10),rgba(255,61,158,.04),transparent)!important}
+.brand-title{display:flex;align-items:center;gap:14px;font-weight:900;letter-spacing:.14em;color:#bff8ff;text-shadow:0 0 18px #2fe7ff;font-size:22px}
+.brand-title .orb{width:42px;height:42px;border-radius:50%;border:4px solid #2fe7ff;box-shadow:0 0 22px #2fe7ff,inset 0 0 14px #2fe7ff;position:relative;flex:none}
+.brand-title .orb:after{content:'';position:absolute;inset:10px;border-radius:50%;background:#2fe7ff;box-shadow:0 0 14px #2fe7ff}
+.eq-wrap{display:grid!important;grid-template-columns:1fr 1fr!important;gap:14px!important;padding:14px!important}.eq-block{border:1px solid rgba(47,231,255,.32)!important;border-radius:18px!important;background:linear-gradient(180deg,rgba(13,31,65,.88),rgba(5,13,34,.9))!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 18px rgba(47,231,255,.08)!important}.eq-block h3{display:flex;align-items:center;gap:9px;margin:0!important;padding:11px 14px!important;color:#bff8ff!important}.eq-block h3:before,.module-title:before{content:'◈';font-size:21px;color:#2fe7ff;text-shadow:0 0 12px #2fe7ff}.eq-bands{padding:8px 12px 12px!important}
+.control-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:0 14px 14px}.control-card,.fx-card{position:relative;border-radius:18px;border:1px solid rgba(47,231,255,.38);background:linear-gradient(180deg,rgba(11,27,59,.94),rgba(5,12,31,.96));padding:13px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 0 18px rgba(47,231,255,.08)}
+.control-card .chead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:0 0 10px}
+.control-card .chead h3{margin:0}
+.control-card .chead .val{font-size:15px;font-weight:700;color:var(--c,#2fe7ff);font-variant-numeric:tabular-nums;
+  text-shadow:0 0 12px var(--c,#2fe7ff),0 0 4px var(--c,#2fe7ff);letter-spacing:.02em;white-space:nowrap}
+.control-card h3,.fx-card h3{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:14px;letter-spacing:.06em;color:#bff8ff}.control-card h3:before,.fx-card h3:before{content:attr(data-icon);font-size:22px;color:var(--c,#2fe7ff);text-shadow:0 0 12px var(--c,#2fe7ff)}
+.fader{--fader-c:var(--c,#2fe7ff)}.control-card input[type=range],.fx-card input[type=range]{width:100%;accent-color:var(--c,#2fe7ff)}
+.fx-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:0 14px 16px}.fx-card .fader{margin:7px 0}.fx-card .hslider-wrap{margin:2px 0 9px}.cut-label .val{color:var(--c,#2fe7ff);font-weight:700;text-shadow:0 0 8px color-mix(in srgb,var(--c,#2fe7ff) 55%,transparent);margin-left:4px}.cut-label{font-size:11px;color:#9fb5c8;margin-bottom:3px}.onoff{position:absolute;right:12px;top:10px;border:1px solid var(--c,#2fe7ff);background:rgba(8,19,42,.9);color:#fff;border-radius:999px;padding:5px 10px;font-weight:800;font-size:11px;letter-spacing:.08em;box-shadow:0 0 10px color-mix(in srgb,var(--c,#2fe7ff) 45%,transparent);cursor:pointer}.onoff.off{opacity:.45;filter:saturate(.3)}
+.fx-card[data-color="pink"]{--c:#ff3d9e}.fx-card[data-color="gold"]{--c:#ffc24b}.fx-card[data-color="green"]{--c:#b9ff45}.fx-card[data-color="cyan"]{--c:#2fe7ff}.control-card[data-color="pink"]{--c:#ff3d9e}.control-card[data-color="gold"]{--c:#ffc24b}.control-card[data-color="green"]{--c:#b9ff45}.control-card[data-color="cyan"]{--c:#2fe7ff}
+@media(max-width:850px){.eq-wrap,.control-row,.fx-row{grid-template-columns:1fr!important}.eq-wrap{padding:10px!important}.control-row,.fx-row{padding-left:10px;padding-right:10px}.control-card,.fx-card{min-height:110px}}
+
+</style></head><body><div class="app"><div class="card topbar"><div class="tb-txt"><div class="eyebrow" id="eyebrow">RADIO</div><div class="now" id="npName">Rien en lecture</div><div class="track" id="npTrack"></div><div class="sub" id="npState">Ouvre les stations pour choisir</div></div><div class="wave" id="wave"></div><div class="tb-btns"><button class="pill" id="power">Écouter</button><button class="pill ghost" id="engineSwitch">🌙 SCREEN OFF</button><button class="pill ghost" id="openFile">Ouvrir un morceau</button><button class="pill ghost" id="openDrawer">Stations</button></div></div><div class="card top5" id="top5Card" style="display:none"><div class="scope-head"><h2>TOP 5 FAVORIS</h2></div><div class="top5-list" id="top5List"></div></div><div class="card scope-card"><div class="scope-head"><h2>OSCILLOSCOPE - 3 BANDES</h2><div class="legend"><span><i style="background:#FF3D9E;box-shadow:0 0 10px #FF3D9E"></i>Bass</span><span><i style="background:#2FE7FF;box-shadow:0 0 10px #2FE7FF"></i>Medium</span><span><i style="background:#B9FF45;box-shadow:0 0 10px #B9FF45"></i>High</span></div></div><canvas id="scope"></canvas><div class="eq-strip" id="eqStrip"></div><div class="buffer-info"><span id="bufferStatus">Buffer: --</span><div class="buffer-bar"><div class="buffer-fill" id="bufferFill"></div></div></div></div><div class="grip" id="grip" title="Glisser pour partager l'espace"><i></i></div><div class="card console" id="console"></div></div><div class="scrim" id="scrim"></div><aside class="drawer" id="drawer"><div class="dhead"><h2>STATIONS</h2><button id="closeDrawer">✕</button></div><input type="text" class="txtin" id="search" placeholder="Chercher un genre ou une station"
          autocapitalize="off" autocorrect="off" style="border-radius:100px;min-height:50px;margin-bottom:10px"><div class="tabs" id="tabs"></div><div class="listwrap"><div id="list"></div><div class="pager" id="pager"></div><div class="addrow" style="display:grid;gap:8px"><input type="text" class="txtin" id="customName" autocapitalize="words"
              autocorrect="off" placeholder="Nom de la radio (facultatif)"><input type="text" class="txtin" id="url" inputmode="url" autocapitalize="off"
              autocorrect="off" placeholder="Coller le lien direct du flux radio"><button class="pill" id="addUrl">＋ Ajouter cette radio</button></div><div class="msg" id="listMsg"></div><p class="foot">SomaFM, FIP et Radio Paradise vivent des dons de leurs auditeurs ou du service public :
@@ -318,8 +612,8 @@ const MAX_BUFFER_DURATION = 6.0;
 const MIN_BUFFER_DURATION = 2.5;
 const FADE_DURATION = 0.04;
 let audioCtx = null;
-let gainNode = null;          // Volume
-let pannerNode = null;        // Balance
+let gainNode = null;
+let pannerNode = null;
 let analyserNode = null;
 let scopeAnimationId = null;
 let abortController = null;
@@ -330,7 +624,6 @@ let firstChunkScheduled = false;
 let pendingChunks = [];
 let isProcessing = false;
 let currentStation = null;
-// Proxy pour les vieux flux Shoutcast (ICY) qui échouent en connexion directe
 const SHOUTCAST_PROXY = 'https://soft-brook-0e52.stefikare.workers.dev/?url=';
 
 let eqSplitter = null;
@@ -415,7 +708,7 @@ function scheduleBuffer(audioBuffer) {
     bandpassFilter.connect(dryGain);
     bandpassFilter.connect(delayNode);
     delayNode.connect(feedbackGain);
-    feedbackGain.connect(delayNode); // boucle de feedback
+    feedbackGain.connect(delayNode);
     delayNode.connect(convolverNode);
     convolverNode.connect(wetGain);
     dryGain.connect(limiterNode);
@@ -497,17 +790,17 @@ function createAudioContext() {
   for (let i = 0; i < leftEQFilters.length - 1; i++) leftEQFilters[i].connect(leftEQFilters[i + 1]);
   for (let i = 0; i < rightEQFilters.length - 1; i++) rightEQFilters[i].connect(rightEQFilters[i + 1]);
   lowpassFilter = audioCtx.createBiquadFilter();
-  lowpassFilter.type = 'lowpass';
+  lowpassFilter.type = 'allpass';
   lowpassFilter.frequency.value = 20000;
   lowpassFilter.Q.value = 0.71;
   highpassFilter = audioCtx.createBiquadFilter();
-  highpassFilter.type = 'highpass';
+  highpassFilter.type = 'allpass';
   highpassFilter.frequency.value = 20;
   highpassFilter.Q.value = 0.71;
   bandpassFilter = audioCtx.createBiquadFilter();
-  bandpassFilter.type = 'bandpass';
+  bandpassFilter.type = 'allpass';
   bandpassFilter.frequency.value = 1000;
-  bandpassFilter.Q.value = 0.05; // très large par défaut = quasi transparent
+  bandpassFilter.Q.value = 0.05;
   delayNode = audioCtx.createDelay(2.0);
   delayNode.delayTime.value = 0.35;
   feedbackGain = audioCtx.createGain();
@@ -639,9 +932,6 @@ async function startStream(url, station) {
   setStatus('📥 Téléchargement...');
   let processingActive = false;
 
-  // Chien de garde : si aucune donnée reçue depuis 4s (le buffer audio tient
-  // jusqu'à 6s, donc ça laisse de la marge avant que ça devienne audible),
-  // on considère le flux perdu et on force une reconnexion automatique.
   let lastDataTime = Date.now();
   let stalled = false;
   const watchdogInterval = setInterval(() => {
@@ -712,11 +1002,9 @@ async function startStream(url, station) {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
 
-  // Reconnexion auto si le flux a été perdu (et que l'utilisateur n'a pas
-  // appuyé sur Stop entre-temps, auquel cas isPlaying serait déjà à false).
   if (stalled && isPlaying) {
     setStatus('🔄 Flux perdu, reconnexion...');
-    await closeAudioContext(); // évite d'accumuler des contextes audio non fermés
+    await closeAudioContext();
     await new Promise(resolve => setTimeout(resolve, 500));
     if (isPlaying) {
       return startStream(url, station);
@@ -742,7 +1030,7 @@ function updateBalance() {
   const balSlider = document.getElementById('balance');
   if (!balSlider) return;
   let v = parseFloat(balSlider.value);
-  if (channelsSwapped) v = -v; // miroir gauche/droite
+  if (channelsSwapped) v = -v;
   const val = document.getElementById('balanceVal');
   if (val) {
     if (v === 0) val.textContent = 'Centre';
@@ -750,6 +1038,13 @@ function updateBalance() {
     else val.textContent = 'Droite ' + v.toFixed(2);
   }
   if (pannerNode) pannerNode.pan.value = v;
+}
+function fillEqTrack(slider){
+  const min = parseFloat(slider.min);
+  const max = parseFloat(slider.max);
+  const val = parseFloat(slider.value);
+  if (isNaN(min) || isNaN(max) || isNaN(val) || max === min) return;
+  slider.style.setProperty('--p', ((val - min) / (max - min)) * 100 + '%');
 }
 function updateEQ() {
   for (let i = 0; i < 5; i++) {
@@ -760,12 +1055,14 @@ function updateEQ() {
       if (leftEQFilters[i]) leftEQFilters[i].gain.value = lv;
       const lval = document.getElementById('eqL' + i + 'Val');
       if (lval) lval.textContent = (lv > 0 ? '+' : '') + lv.toFixed(1);
+      fillEqTrack(ls);
     }
     if (rs) {
       const rv = parseFloat(rs.value);
       if (rightEQFilters[i]) rightEQFilters[i].gain.value = rv;
       const rval = document.getElementById('eqR' + i + 'Val');
       if (rval) rval.textContent = (rv > 0 ? '+' : '') + rv.toFixed(1);
+      fillEqTrack(rs);
     }
   }
 }
@@ -973,13 +1270,11 @@ async function studioTogglePlay(station) {
     const isAbort = err.name === 'AbortError';
     const alreadyProxied = station.u.indexOf(SHOUTCAST_PROXY) === 0;
     if (!isAbort && !alreadyProxied) {
-      // Connexion directe échouée (souvent un vieux flux Shoutcast/ICY) :
-      // on retente automatiquement via le proxy avant d'abandonner.
       try {
         setStatus('🔄 Connexion directe impossible, nouvelle tentative via proxy...');
         const proxiedUrl = SHOUTCAST_PROXY + encodeURIComponent(station.u);
         await startStream(proxiedUrl, station);
-        return; // succès via le proxy, on s'arrête là
+        return;
       } catch (err2) {
         if (err2.name !== 'AbortError') {
           setStatus('❌ ' + err2.message);
@@ -1428,9 +1723,9 @@ var idle = 0;
   cx.stroke();
   cx.shadowBlur = 0;
   if (live) {
-    traceBand(bassAnalyser, '#FF3D9E', 0.34, 0.95);  // Bass - rose
-    traceBand(midAnalyser, '#2FE7FF', 0.30, 0.9);    // Medium - cyan
-    traceBand(highAnalyser, '#B9FF45', 0.26, 0.85);  // High - vert
+    traceBand(bassAnalyser, '#FF3D9E', 0.34, 0.95);
+    traceBand(midAnalyser, '#2FE7FF', 0.30, 0.9);
+    traceBand(highAnalyser, '#B9FF45', 0.26, 0.85);
   } else {
     ['#FF3D9E', '#2FE7FF', '#B9FF45'].forEach(function(c, n) {
       const p = new Path2D();
@@ -1499,158 +1794,100 @@ picker.addEventListener('change',function(){
 });
 document.getElementById('openFile').addEventListener('click',function(){ picker.click(); });
 var panel=document.getElementById('console');
-(function buildConsole(){
-  var h='<div class="ctitle"><h2>CONSOLE</h2>'
-       +'<div class="ctitle-actions"><button data-reset class="resetbtn" title="Réinitialiser tous les réglages">↺ Reset</button>'
-       +'<button data-swap class="swapbtn" title="Échanger gauche et droite">⇄</button></div></div>'
-       +'<div class="gainbox">'
-       +'<div class="fader" style="--c:#2FE7FF"><div class="gainhead"><span class="lbl">Volume</span><span class="val" data-val="gain"></span></div>'
-       +'<input type="range" id="volume" class="big" min="-24" max="12" step="0.5" value="0"></div>'
-       +'<div class="fader" style="--c:#FF3D9E;margin-top:6px"><div class="fhead"><span class="lbl">Balance</span>'
-       +'<span class="val" id="balanceVal">Centre</span></div>'
-       +'<input type="range" id="balance" class="big" min="-1" max="1" step="0.01" value="0"></div>'
-       +'<div class="fader" style="--c:#B9FF45;margin-top:6px"><div class="fhead"><span class="lbl">Stéréo étendue (crossfeed)</span>'
-       +'<span class="val" id="crossfeedVal">0%</span></div>'
-       +'<input type="range" id="crossfeed" class="big" min="0" max="1" step="0.01" value="0"></div>'
-       +'</div>'
-       +'<div class="mods"><div class="mod"><h3>ÉGALISEUR GAUCHE (5 BANDES)</h3><div class="veq">';
+(function buildEqStrip(){
+  var strip = document.getElementById('eqStrip');
+  if (!strip) return;
   var eqLabels = ['60','250','1k','4k','12k'];
+  var leftHtml = '';
   eqLabels.forEach(function(lbl,i){
-    h+='<div class="veq-band" style="--c:#FF3D9E"><span class="vval" id="eqL'+i+'Val">0</span>'
-      +'<input type="range" id="eqL'+i+'" data-eqv="1" min="-24" max="24" step="0.5" value="0">'
-      +'<span class="vlbl">'+lbl+'</span></div>';
+    leftHtml += '<div class="veq-band" style="--c:#FF3D9E">'
+              + '<span class="vval" id="eqL'+i+'Val">0</span>'
+              + '<div class="vslider-wrap">'
+              + '<input type="range" class="vslider" id="eqL'+i+'" data-eqv="1" min="-24" max="24" step="0.5" value="0">'
+              + '</div>'
+              + '<span class="vlbl">G '+lbl+'</span></div>';
   });
-  h+='</div></div>'
-   +'<div class="mod"><h3>ÉGALISEUR DROITE (5 BANDES)</h3><div class="veq">';
+  var rightHtml = '';
   eqLabels.forEach(function(lbl,i){
-    h+='<div class="veq-band" style="--c:#2FE7FF"><span class="vval" id="eqR'+i+'Val">0</span>'
-      +'<input type="range" id="eqR'+i+'" data-eqv="1" min="-24" max="24" step="0.5" value="0">'
-      +'<span class="vlbl">'+lbl+'</span></div>';
+    rightHtml += '<div class="veq-band" style="--c:#2FE7FF">'
+               + '<span class="vval" id="eqR'+i+'Val">0</span>'
+               + '<div class="vslider-wrap">'
+               + '<input type="range" class="vslider" id="eqR'+i+'" data-eqv="1" min="-24" max="24" step="0.5" value="0">'
+               + '</div>'
+               + '<span class="vlbl">D '+lbl+'</span></div>';
   });
-  h+='</div></div>'
-   +'<div class="mod"><h3>FILTRES</h3>'
-   +'<div class="fader" style="--c:#FFC24B"><div class="fhead"><span class="lbl">Passe-bas</span>'
-   +'<span class="val" id="lowpassVal">20000 Hz (off)</span></div>'
-   +'<input type="range" id="lowpass" min="200" max="20000" step="100" value="20000"></div>'
-   +'<div class="fader" style="--c:#FFC24B;margin-top:2px"><div class="fhead"><span class="lbl">Résonance passe-bas (Q)</span>'
-   +'<span class="val"></span></div>'
-   +'<input type="range" id="lowpassQ" min="0.1" max="20" step="0.1" value="0.71"></div>'
-   +'<div class="fader" style="--c:#FF3D9E"><div class="fhead"><span class="lbl">Passe-haut</span>'
-   +'<span class="val" id="highpassVal">20 Hz (off)</span></div>'
-   +'<input type="range" id="highpass" min="20" max="2000" step="10" value="20"></div>'
-   +'<div class="fader" style="--c:#FF3D9E;margin-top:2px"><div class="fhead"><span class="lbl">Résonance passe-haut (Q)</span>'
-   +'<span class="val"></span></div>'
-   +'<input type="range" id="highpassQ" min="0.1" max="20" step="0.1" value="0.71"></div>'
-   +'<div class="fader" style="--c:#2FE7FF"><div class="fhead"><span class="lbl">Passe-bande</span>'
-   +'<span class="val" id="bandpassVal">1000 Hz (off)</span></div>'
-   +'<input type="range" id="bandpassFreq" min="100" max="8000" step="50" value="1000"></div>'
-   +'<div class="fader" style="--c:#2FE7FF;margin-top:2px"><div class="fhead"><span class="lbl">Largeur passe-bande (Q)</span>'
-   +'<span class="val"></span></div>'
-   +'<input type="range" id="bandpassQ" min="0.05" max="10" step="0.05" value="0.05"></div>'
-   +'</div>'
-   +'<div class="mod"><h3>EFFETS</h3>'
-   +'<div class="fader" style="--c:#FF3D9E"><div class="fhead"><span class="lbl">Feedback</span>'
-   +'<span class="val" id="feedbackVal">0%</span></div>'
-   +'<input type="range" id="feedback" min="0" max="0.9" step="0.01" value="0"></div>'
-   +'<div class="fader" style="--c:#2FE7FF"><div class="fhead"><span class="lbl">Reverb</span>'
-   +'<span class="val" id="reverbVal">0%</span></div>'
-   +'<input type="range" id="reverb" min="0" max="1" step="0.01" value="0"></div>'
-   +'<div class="fader" style="--c:#B9FF45"><div class="fhead"><span class="lbl">Dry / Wet</span>'
-   +'<span class="val" id="drywetVal">100% dry</span></div>'
-   +'<input type="range" id="drywet" min="0" max="1" step="0.01" value="0"></div>'
-   +'<div class="fader" style="--c:#FFC24B"><div class="fhead"><span class="lbl">Limiter</span>'
-   +'<span class="val" id="limiterVal">-6 dB</span></div>'
-   +'<input type="range" id="limiter" min="-40" max="0" step="1" value="-6"></div>'
-   +'</div></div>';
-  panel.innerHTML=h;
-  var volSlider = document.getElementById('volume');
-  volSlider.addEventListener('input', function() { updateVolume(); });
-  updateVolume();
-  var balSlider = document.getElementById('balance');
-  balSlider.addEventListener('input', function() { updateBalance(); });
-  updateBalance();
-  var cfSlider = document.getElementById('crossfeed');
-  if (cfSlider) cfSlider.addEventListener('input', function() { updateCrossfeed(); });
-  var eqSliders = panel.querySelectorAll('[data-eqv]');
-  eqSliders.forEach(function(slider) {
-    slider.addEventListener('input', function() { updateEQ(); });
-  });
-  updateEQ();
-  var lowpassSlider = document.getElementById('lowpass');
-  if (lowpassSlider) lowpassSlider.addEventListener('input', function() { updateLowpass(); });
-  var lowpassQSlider = document.getElementById('lowpassQ');
-  if (lowpassQSlider) lowpassQSlider.addEventListener('input', function() { updateLowpass(); });
-  var highpassSlider = document.getElementById('highpass');
-  if (highpassSlider) highpassSlider.addEventListener('input', function() { updateHighpass(); });
-  var highpassQSlider = document.getElementById('highpassQ');
-  if (highpassQSlider) highpassQSlider.addEventListener('input', function() { updateHighpass(); });
-  var bandpassFreqSlider = document.getElementById('bandpassFreq');
-  if (bandpassFreqSlider) bandpassFreqSlider.addEventListener('input', function() { updateBandpass(); });
-  var bandpassQSlider = document.getElementById('bandpassQ');
-  if (bandpassQSlider) bandpassQSlider.addEventListener('input', function() { updateBandpass(); });
-  var feedbackSlider = document.getElementById('feedback');
-  if (feedbackSlider) feedbackSlider.addEventListener('input', function() { updateFeedback(); });
-  var reverbSlider = document.getElementById('reverb');
-  if (reverbSlider) reverbSlider.addEventListener('input', function() { updateDryWet(); });
-  var drywetSlider = document.getElementById('drywet');
-  if (drywetSlider) drywetSlider.addEventListener('input', function() { updateDryWet(); });
-  var limiterSlider = document.getElementById('limiter');
-  if (limiterSlider) limiterSlider.addEventListener('input', function() { updateLimiter(); });
-  var swapBtn = panel.querySelector('[data-swap]');
-  if (swapBtn) {
-    swapBtn.addEventListener('click', function() {
-      channelsSwapped = !channelsSwapped;
-      swapBtn.classList.toggle('on', channelsSwapped);
-      updateBalance();
-    });
+  strip.innerHTML = '<div class="veq-group">' + leftHtml + '</div>'
+                  + '<div class="veq-group">' + rightHtml + '</div>';
+  var sliders = strip.querySelectorAll('[data-eqv]');
+  function fillEqTrack(s){
+    var min = parseFloat(s.min), max = parseFloat(s.max), val = parseFloat(s.value);
+    if (isNaN(min) || isNaN(max) || isNaN(val) || max === min) return;
+    var p = ((val - min) / (max - min)) * 100;
+    var centerP = ((0 - min) / (max - min)) * 100;
+    var lo = Math.min(centerP, p), hi = Math.max(centerP, p);
+    s.style.setProperty('--fill-lo', lo + '%');
+    s.style.setProperty('--fill-hi', hi + '%');
   }
-
-  var resetBtn = panel.querySelector('[data-reset]');
-  if (resetBtn) {
-    resetBtn.addEventListener('click', function() {
-      var defaults = {
-        volume: 0, balance: 0, crossfeed: 0,
-        eqL0: 0, eqL1: 0, eqL2: 0, eqL3: 0, eqL4: 0,
-        eqR0: 0, eqR1: 0, eqR2: 0, eqR3: 0, eqR4: 0,
-        lowpass: 20000, lowpassQ: 0.71, highpass: 20, highpassQ: 0.71,
-        bandpassFreq: 1000, bandpassQ: 0.05,
-        feedback: 0, reverb: 0, drywet: 0, limiter: -6
-      };
-      Object.keys(defaults).forEach(function(id) {
-        var slider = document.getElementById(id);
-        if (!slider) return;
-        slider.value = defaults[id];
-        slider.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      channelsSwapped = false;
-      if (swapBtn) swapBtn.classList.remove('on');
-      updateBalance();
-      setStatus('↺ Réglages réinitialisés.');
-    });
-  }
-  function updateSliderFill(slider) {
-    const min = parseFloat(slider.min);
-    const max = parseFloat(slider.max);
-    const val = parseFloat(slider.value);
-    const pct = ((val - min) / (max - min)) * 100;
-    slider.style.setProperty('--p', pct + '%');
-  }
-  const allSliders = panel.querySelectorAll('input[type=range]');
-  allSliders.forEach(function(s) {
-    updateSliderFill(s);
-    s.addEventListener('input', function() {
-      updateSliderFill(this);
-    });
-    var wrapper = s.closest('.fader, .veq-band');
+  sliders.forEach(function(s){
+    s.setAttribute('data-center', '1');
+    fillEqTrack(s);
+    s.addEventListener('input', function(){ updateEQ(); fillEqTrack(this); });
+    var wrapper = s.closest('.veq-band');
     if (wrapper) {
-      var activate = function() { wrapper.classList.add('active'); };
-      var deactivate = function() { wrapper.classList.remove('active'); };
+      var activate = function(){ wrapper.classList.add('active'); };
+      var deactivate = function(){ wrapper.classList.remove('active'); };
       s.addEventListener('pointerdown', activate);
       s.addEventListener('focus', activate);
       s.addEventListener('pointerup', deactivate);
       s.addEventListener('pointercancel', deactivate);
       s.addEventListener('blur', deactivate);
     }
+  });
+  updateEQ();
+})();
+(function buildConsole(){
+  var h = `
+  <div class="ctitle"><div class="brand-title"><span class="orb"></span>RADIO THE CORE <span style="opacity:.55;font-size:11px">• CONSOLE</span></div><div class="ctitle-actions"><button data-reset class="resetbtn">↺ Reset</button><button data-swap class="swapbtn">⇄</button></div></div>
+  <div class="control-row">
+    <div class="control-card" style="--c:#B9FF45"><div class="chead"><h3>◉ VOLUME</h3><span class="val" data-val="gain">0.0 dB</span></div><div class="hslider-wrap" style="--markpos:66.667%"><input id="volume" class="hslider" type="range" min="-24" max="12" step="0.5" value="0"></div></div>
+    <div class="control-card" style="--c:#FF3D9E"><div class="chead"><h3>↔ BALANCE</h3><span class="val" id="balanceVal">Centre</span></div><div class="hslider-wrap" style="--markpos:50%"><input id="balance" class="hslider" type="range" min="-1" max="1" step="0.01" value="0" data-center="1"></div></div>
+    <div class="control-card" style="--c:#2FE7FF"><div class="chead"><h3>◌ STÉRÉO ÉTENDUE</h3><span class="val" id="crossfeedVal">0%</span></div><div class="hslider-wrap" style="--markpos:0%"><input id="crossfeed" class="hslider" type="range" min="0" max="1" step="0.01" value="0"></div></div>
+    <div class="control-card" style="--c:#FFC24B"><div class="chead"><h3>⬡ LIMITER</h3><span class="val" id="limiterVal">-6 dB</span></div><div class="hslider-wrap" style="--markpos:100%"><input id="limiter" class="hslider" type="range" min="-40" max="0" step="1" value="-6"></div></div>
+  </div>
+  <div class="module-title">FILTRES & EFFETS</div>
+  <div class="fx-row">
+    <div class="fx-card" style="--c:#FFC24B"><h3>⌁ PASSE-BAS</h3><button class="onoff off" data-toggle="lowpass">OFF</button><div class="cut-label">CUT <span class="val" id="lowpassVal"></span></div><div class="hslider-wrap" style="--markpos:100%"><input id="lowpass" class="hslider" type="range" min="200" max="20000" step="100" value="20000"></div></div>
+    <div class="fx-card" style="--c:#FF3D9E"><h3>⌁ PASSE-HAUT</h3><button class="onoff off" data-toggle="highpass">OFF</button><div class="cut-label">CUT <span class="val" id="highpassVal"></span></div><div class="hslider-wrap" style="--markpos:0%"><input id="highpass" class="hslider" type="range" min="20" max="2000" step="10" value="20"></div></div>
+    <div class="fx-card" style="--c:#2FE7FF"><h3>⌇ PASSE-BANDE</h3><button class="onoff off" data-toggle="bandpass">OFF</button><div class="cut-label">CUT <span class="val" id="bandpassVal"></span></div><div class="hslider-wrap"><input id="bandpassFreq" class="hslider" type="range" min="100" max="8000" step="50" value="1000"></div></div>
+    <div class="fx-card" style="--c:#B9FF45"><h3>◎ REVERB</h3><button class="onoff off" data-toggle="reverb">OFF</button><div class="cut-label">FEEDBACK <span class="val" id="feedbackVal"></span></div><div class="hslider-wrap" style="--markpos:0%"><input id="feedback" class="hslider" type="range" min="0" max="0.9" step="0.01" value="0"></div><div class="cut-label">DRY / WET <span class="val" id="drywetVal"></span></div><div class="hslider-wrap" style="--markpos:0%"><input id="drywet" class="hslider" type="range" min="0" max="1" step="0.01" value="0"></div></div>
+  </div>`;
+  panel.innerHTML=h;
+  function wire(id, fn){ var e=document.getElementById(id); if(e){ e.addEventListener('input',fn); fn(); } }
+  wire('volume',updateVolume); wire('balance',updateBalance); wire('crossfeed',function(){ var e=this||document.getElementById('crossfeed'); var v=document.getElementById('crossfeedVal'); if(v) v.textContent=Math.round(+e.value*100)+'%'; if(typeof updateCrossfeed==='function') updateCrossfeed(); }); wire('limiter',updateLimiter);
+  wire('lowpass',updateLowpass); wire('highpass',updateHighpass); wire('bandpassFreq',updateBandpass); wire('feedback',updateFeedback); wire('drywet',updateDryWet);
+  panel.querySelector('[data-swap]').addEventListener('click',function(){ channelsSwapped=!channelsSwapped; this.classList.toggle('on',channelsSwapped); updateBalance(); });
+  panel.querySelector('[data-reset]').addEventListener('click',function(){ location.reload(); });
+  panel.querySelectorAll('[data-toggle]').forEach(function(btn){ btn.addEventListener('click',function(){ var on=!btn.classList.contains('off'); btn.classList.toggle('off',on); btn.textContent=on?'OFF':'ON'; var k=btn.dataset.toggle; if(k==='lowpass'&&lowpassFilter) lowpassFilter.type=on?'allpass':'lowpass'; if(k==='highpass'&&highpassFilter) highpassFilter.type=on?'allpass':'highpass'; if(k==='bandpass'&&bandpassFilter) bandpassFilter.type=on?'allpass':'bandpass'; if(k==='reverb'){ if(wetGain) wetGain.gain.value=on?0:+document.getElementById('drywet').value; if(dryGain) dryGain.gain.value=on?1:1-document.getElementById('drywet').value; } }); });
+
+  function fillTrack(s){
+    var min = parseFloat(s.min);
+    var max = parseFloat(s.max);
+    var val = parseFloat(s.value);
+    if (isNaN(min) || isNaN(max) || isNaN(val) || max === min) return;
+    var p = ((val - min) / (max - min)) * 100;
+    if (s.dataset.center) {
+      var centerP = ((0 - min) / (max - min)) * 100;
+      var lo = Math.min(centerP, p);
+      var hi = Math.max(centerP, p);
+      s.style.setProperty('--fill-lo', lo + '%');
+      s.style.setProperty('--fill-hi', hi + '%');
+    } else {
+      s.style.setProperty('--p', p + '%');
+    }
+  }
+  panel.querySelectorAll('input[type=range]').forEach(function(s){
+    fillTrack(s);
+    s.addEventListener('input', function(){ fillTrack(this); });
   });
 })();
 render('Ouvre les stations pour choisir');
